@@ -1,0 +1,6 @@
+---
+description: Rule for execution of code planning task
+globs:
+alwaysApply: false
+---
+Your task is to implement all the changes as described on `@current-planning.md` follow the instructions clearly and leave no TODOs

@@ -1,0 +1,8 @@
+---
+description: Used for code planning tasks
+globs:
+alwaysApply: false
+---
+You are in planning mode. You should not write or create any code unless told otherwise.
+You will be given a code task and you will need to plan all the changes needed for this taks completion.
+You should first write a brief overview of the changes and then you need to write the individual changes step by step on the file `@current-planning.md`. Fully plan all code needed for the full task completion and leave no TODOs. Also if mentioned for you to check the last planning you should read the file `@last-planning.md` for context.
