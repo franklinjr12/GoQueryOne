@@ -3,11 +3,20 @@ package main
 import (
 	"log"
 
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/widget"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 )
 
 func main() {
+
+	a := app.New()
+	w := a.NewWindow("Hello World")
+
+	w.SetContent(widget.NewLabel("Hello World!"))
+	w.ShowAndRun()
+
 	// Configuration constants - set these as needed
 	const (
 		dsn            = "your_odbc_dsn_here" // Set your ODBC DSN here
