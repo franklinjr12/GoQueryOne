@@ -1,0 +1,27 @@
+# Ignore VCS
+.git
+.gitignore
+
+# Editor/IDE
+.vscode/
+.idea/
+.cursor/
+
+# Build artifacts and local outputs
+bin/
+out/
+main.exe
+*.exe
+
+# Containers and OS junk
+*.log
+.DS_Store
+Thumbs.db
+
+# Cache
+**/.cache/
+
+# Node modules if present
+**/node_modules/
+
+# Everything else is opt-in via Dockerfile COPY steps

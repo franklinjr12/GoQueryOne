@@ -3,7 +3,6 @@ package odbc
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 )
@@ -151,7 +150,11 @@ func DisplayResult(result *QueryResult) {
 			if val == nil {
 				rowLine += "NULL"
 			} else {
-				rowLine += fmt.Sprintf("%v", val)
+				// check if val is []byte if so convert to string
+				if _, ok := val.([]byte); ok {
+					val = string(val.([]byte))
+				}
+				rowLine += val.(string)
 			}
 		}
 		log.Println(rowLine)
