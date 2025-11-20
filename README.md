@@ -11,40 +11,13 @@ A Go application that connects to ODBC data sources and executes SQL queries usi
 - Connection testing capabilities
 - CSV-style result output
 
-## Installation
-
-1. Ensure you have Go 1.22.3 or later installed
-2. Clone the repository
-3. Install dependencies:
-   ```bash
-   go mod tidy
-   ```
+## Installation and building
+- Use the Dockerfile
+```bash
+docker buildx build --output type=local,dest=out .
+```
 
 ## Usage
-
-### Configuration
-
-The application uses constants defined in `cmd/main.go` for configuration:
-
-```go
-const (
-    dsn            = "your_odbc_dsn_here"  // Set your ODBC DSN here
-    query          = "SELECT 1"            // Set your SQL query here
-    configFile     = ""                    // Set config file path if using one, or leave empty
-    testConnection = false                 // Set to true to test connection only
-)
-```
-
-### Running the Application
-
-```bash
-# Run the application
-go run cmd/main.go
-
-# Build and run
-go build -o GoQueryOne cmd/main.go
-./GoQueryOne
-```
 
 ### Configuration File
 
@@ -79,25 +52,6 @@ Results are displayed in CSV format:
 - `github.com/alexbrainman/odbc` - ODBC driver for database/sql
 - Standard library packages: `database/sql`, `flag`, `log`, `encoding/json`, `time`
 
-## Building
-
-```bash
-go build -o GoQueryOne cmd/main.go
-```
-
-## Testing
-
-To test the connection, set `testConnection = true` in the constants in `cmd/main.go`:
-
-```go
-const (
-    dsn            = "your_odbc_dsn_here"
-    query          = "SELECT 1"
-    configFile     = ""
-    testConnection = true  // Set to true to test connection only
-)
-```
-
 ## Error Handling
 
 All errors and output are logged to the console/log file. The application provides clear error messages for:
@@ -108,9 +62,8 @@ All errors and output are logged to the console/log file. The application provid
 
 ## Future Enhancements
 
-- UI framework integration (Fyne)
-- Advanced query features
 - Schema browsing
+- Advanced query features
 - Connection pooling
 - Result export functionality
 - Support for multiple database types

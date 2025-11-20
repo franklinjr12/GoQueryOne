@@ -30,7 +30,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy only needed source to avoid invalidating cache unnecessarily
 COPY cmd ./cmd
 COPY internal ./internal
-COPY README.md ./README.md
 
 # Build the Windows GUI executable (no console window)
 # Adjust the output name if desired
