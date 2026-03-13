@@ -7,17 +7,14 @@ import (
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 )
 
-// FormatResultAsCSVLike converts a QueryResult into a CSV-like string with header and footer.
-// If maxRows > 0 and result has more than maxRows, the output is truncated and a note is added.
-func FormatResultAsCSVLike(result *odbc.QueryResult, maxRows int) string {
-	if result == nil {
+func FormatResultAsCSVLike(result *odbc.StatementResult) string {
+	if result == nil || !result.HasRows {
 		return ""
 	}
 
 	var builder strings.Builder
 
-	// Header line
-	for i, col := range result.Columns {
+	for i, col := range result.ResultSet.Columns {
 		if i > 0 {
 			builder.WriteString(",")
 		}
@@ -25,35 +22,21 @@ func FormatResultAsCSVLike(result *odbc.QueryResult, maxRows int) string {
 	}
 	builder.WriteString("\n")
 
-	// Rows
-	rowLimit := result.RowCount
-	truncated := false
-	if maxRows > 0 && rowLimit > maxRows {
-		rowLimit = maxRows
-		truncated = true
-	}
-
-	for r := 0; r < rowLimit; r++ {
-		row := result.Rows[r]
+	for _, row := range result.ResultSet.Rows {
 		for c, val := range row {
 			if c > 0 {
 				builder.WriteString(",")
 			}
-			if val == nil {
-				builder.WriteString("NULL")
-			} else {
-				builder.WriteString(fmt.Sprintf("%v", val))
-			}
+			builder.WriteString(fmt.Sprintf("%v", val))
 		}
 		builder.WriteString("\n")
 	}
 
-	// Footer
-	if truncated {
-		builder.WriteString(fmt.Sprintf("... (truncated to %d rows)\n", rowLimit))
+	if result.ResultSet.Truncated {
+		builder.WriteString(fmt.Sprintf("... (truncated to %d rows)\n", result.ResultSet.TruncatedAt))
 	}
 	builder.WriteString(fmt.Sprintf("Execution time: %v\n", result.ExecutionTime))
-	builder.WriteString(fmt.Sprintf("Rows: %d\n", result.RowCount))
+	builder.WriteString(fmt.Sprintf("Rows: %d\n", result.ResultSet.RowCount))
 
 	return builder.String()
 }
