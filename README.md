@@ -16,6 +16,7 @@ A Go application that connects to ODBC data sources and executes SQL queries usi
 ```bash
 docker buildx build --output type=local,dest=out .
 ```
+- The output includes `GoQueryOne.exe` and `GoQueryOne.exe.manifest` (required for Walk/Common Controls 6 and DPI behavior).
 
 ## Usage
 

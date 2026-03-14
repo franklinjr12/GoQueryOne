@@ -36,11 +36,13 @@ COPY internal ./internal
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -buildvcs=false -ldflags "-s -w -H=windowsgui" -o /out/GoQueryOne.exe ./cmd
+COPY cmd/GoQueryOne.exe.manifest /out/GoQueryOne.exe.manifest
 
 
 # 2) Minimal final stage that only contains the build artifact
 # You can export it with BuildKit: `docker buildx build --output type=local,dest=out .`
 FROM scratch AS artifact
 COPY --from=builder /out/GoQueryOne.exe /GoQueryOne.exe
+COPY --from=builder /out/GoQueryOne.exe.manifest /GoQueryOne.exe.manifest
 
 

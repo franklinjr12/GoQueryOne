@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "language": "en-US",
+    "theme": "system",
+    "window": {
+      "width": 1920,
+      "height": 1017,
+      "x": 40,
+      "y": 40
+    },
+    "logging": {
+      "level": "info",
+      "file": "logs.txt",
+      "maxMiB": 20,
+      "enabled": true
+    }
+  },
+  "query": {
+    "defaultTimeoutMs": 60000,
+    "defaultMaxRows": 10000,
+    "fetchPageSize": 500,
+    "stopOnErrorInScript": true
+  },
+  "connections": [
+    {
+      "id": "connection-20260313100030-1773406830371039200",
+      "name": "Connection 20260313100030",
+      "type": "dsn",
+      "dsn": "rivermonitor_odbc",
+      "driver": "PostgreSQL ANSI",
+      "savePassword": false,
+      "options": {
+        "loginTimeoutMs": 30000,
+        "limitSyntax": "TOP"
+      }
+    },
+    {
+      "id": "connection-20260314161734-1773515854173990100",
+      "name": "Connection 20260314161734",
+      "type": "dsn",
+      "dsn": "rivermonitor_odbc",
+      "savePassword": false,
+      "options": {
+        "loginTimeoutMs": 30000,
+        "limitSyntax": "TOP"
+      }
+    }
+  ]
+}

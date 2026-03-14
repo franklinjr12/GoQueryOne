@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -6,22 +8,24 @@ import (
 	"os"
 	"path/filepath"
 
-	"fyne.io/fyne/v2/app"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/ui"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	cfgPath := config.ResolveConfigPath()
 	cfg, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		cfg = config.DefaultConfig()
 	}
+
 	logPath := cfg.App.Logging.File
 	if filepath.Dir(logPath) == "." {
 		logPath = filepath.Join(filepath.Dir(cfgPath), logPath)
 	}
+
 	logFile, err := openLogFile(logPath, cfg.App.Logging.MaxMiB)
 	if err != nil {
 		log.Fatalf("Error opening log file %s: %v", logPath, err)
@@ -29,9 +33,9 @@ func main() {
 	defer logFile.Close()
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 
-	a := app.New()
-	w := ui.NewSimpleUI(a)
-	w.ShowAndRun()
+	if err := ui.RunWithConfig(cfgPath, cfg); err != nil {
+		log.Fatalf("Error starting UI: %v", err)
+	}
 }
 
 func openLogFile(path string, maxMiB int) (*os.File, error) {
