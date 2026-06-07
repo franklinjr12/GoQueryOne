@@ -16,7 +16,8 @@ A Go application that connects to ODBC data sources and executes SQL queries usi
 ```bash
 docker buildx build --output type=local,dest=out .
 ```
-- The output includes `GoQueryOne.exe` and `GoQueryOne.exe.manifest` (required for Walk/Common Controls 6 and DPI behavior).
+- The output includes `GoQueryOne.exe`. The Windows manifest for Walk/Common Controls 6 and DPI behavior is embedded in the executable from `cmd/GoQueryOne.syso`.
+- If `cmd/GoQueryOne.exe.manifest` changes, regenerate the embedded resource with `go run github.com/akavel/rsrc@latest -manifest cmd\GoQueryOne.exe.manifest -o cmd\GoQueryOne.syso`.
 
 ## Usage
 
