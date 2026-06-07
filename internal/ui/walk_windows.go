@@ -1519,11 +1519,14 @@ func (u *applicationUI) showConnectionWindow() {
 		return
 	}
 	_ = dlg.SetTitle("Connection")
-	_ = dlg.SetBounds(walk.Rectangle{Width: 760, Height: 460})
+	_ = dlg.SetMinMaxSize(walk.Size{Width: 980, Height: 460}, walk.Size{})
 
 	layout := walk.NewGridLayout()
 	_ = layout.SetMargins(walk.Margins{10, 10, 10, 10})
 	_ = layout.SetSpacing(8)
+	_ = layout.SetColumnStretchFactor(1, 1)
+	_ = layout.SetColumnStretchFactor(2, 1)
+	_ = layout.SetColumnStretchFactor(3, 1)
 	if err := dlg.SetLayout(layout); err != nil {
 		showErrorBox(u.mainWindow, "Connection", err)
 		return
