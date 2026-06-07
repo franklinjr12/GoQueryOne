@@ -6,9 +6,9 @@ FROM golang:1.22-bookworm AS builder
 
 ENV CGO_ENABLED=1 \
     GOOS=windows \
-    GOARCH=amd64 \
-    CC=x86_64-w64-mingw32-gcc \
-    CXX=x86_64-w64-mingw32-g++
+    GOARCH=386 \
+    CC=i686-w64-mingw32-gcc \
+    CXX=i686-w64-mingw32-g++
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

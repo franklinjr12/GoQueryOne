@@ -500,17 +500,18 @@ func (u *applicationUI) closeCurrentTab() {
 	if u.editorTabs == nil {
 		return
 	}
+	pages := u.editorTabs.Pages()
 	idx := u.editorTabs.CurrentIndex()
-	if idx < 0 || idx >= u.editorTabs.Pages().Len() {
+	if idx < 0 || idx >= pages.Len() {
 		return
 	}
-	page := u.editorTabs.Pages().At(idx)
+	page := pages.At(idx)
 	tab := u.editorTabIndex[page]
 	if tab == nil {
 		return
 	}
 
-	if u.editorTabs.Pages().Len() == 1 {
+	if pages.Len() == 1 {
 		tab.suppressDirty = true
 		_ = tab.Editor.SetText("")
 		tab.suppressDirty = false
@@ -519,8 +520,18 @@ func (u *applicationUI) closeCurrentTab() {
 		return
 	}
 
+	nextIndex := idx - 1
+	if nextIndex < 0 {
+		nextIndex = 1
+	}
+	_ = u.editorTabs.SetCurrentIndex(nextIndex)
+
+	if err := pages.Remove(page); err != nil {
+		showErrorBox(u.mainWindow, "Editor", err)
+		return
+	}
 	delete(u.editorTabIndex, page)
-	_ = u.editorTabs.Pages().Remove(page)
+	page.Dispose()
 }
 
 func (u *applicationUI) renameCurrentTab() {
