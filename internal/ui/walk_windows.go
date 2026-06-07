@@ -186,6 +186,9 @@ func (u *applicationUI) run() error {
 	if err := u.build(); err != nil {
 		return err
 	}
+	if err := u.registerShortcuts(); err != nil {
+		return err
+	}
 	u.restoreProfiles()
 	u.mainWindow.Show()
 	u.mainWindow.Run()
@@ -252,6 +255,18 @@ func (u *applicationUI) build() error {
 	})
 
 	return nil
+}
+
+func (u *applicationUI) registerShortcuts() error {
+	runAction := walk.NewAction()
+	if err := runAction.SetText("Run"); err != nil {
+		return err
+	}
+	if err := runAction.SetShortcut(walk.Shortcut{Key: walk.KeyF5}); err != nil {
+		return err
+	}
+	runAction.Triggered().Attach(u.runStatement)
+	return u.mainWindow.ShortcutActions().Add(runAction)
 }
 
 func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
