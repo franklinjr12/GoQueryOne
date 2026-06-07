@@ -81,6 +81,7 @@ type applicationUI struct {
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
 
+	outputTabs     *walk.TabWidget
 	resultsTable   *walk.TableView
 	resultsModel   *resultsTableModel
 	resultsColumns []string
@@ -794,6 +795,7 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 	if err != nil {
 		return nil, err
 	}
+	u.outputTabs = tabs
 	_ = layout.SetStretchFactor(tabs, 1)
 
 	resultsPage, err := walk.NewTabPage()
@@ -1164,7 +1166,7 @@ func (u *applicationUI) showDiagnostic(err error, res odbc.StatementResult) {
 	var b strings.Builder
 	b.WriteString("Error: ")
 	b.WriteString(err.Error())
-	b.WriteString("\n")
+	b.WriteString("\r\n")
 	for _, rec := range res.Diagnostics {
 		if rec.State != "" {
 			b.WriteString("SQLSTATE=" + rec.State + " ")
@@ -1173,9 +1175,17 @@ func (u *applicationUI) showDiagnostic(err error, res odbc.StatementResult) {
 			b.WriteString(fmt.Sprintf("Native=%d ", rec.NativeError))
 		}
 		b.WriteString(rec.Message)
-		b.WriteString("\n")
+		b.WriteString("\r\n")
 	}
 	_ = u.errorsEntry.SetText(strings.TrimSpace(odbc.MaskSecrets(b.String())))
+	u.showErrorsTab()
+}
+
+func (u *applicationUI) showErrorsTab() {
+	if u.outputTabs == nil {
+		return
+	}
+	_ = u.outputTabs.SetCurrentIndex(2)
 }
 
 func (u *applicationUI) updateHistory() {
@@ -1186,7 +1196,7 @@ func (u *applicationUI) updateHistory() {
 	}
 	var b strings.Builder
 	for _, item := range session.History {
-		b.WriteString(fmt.Sprintf("%s [%s] %v\n%s\n\n", item.When.Format(time.RFC3339), item.Status, item.Duration, item.SQL))
+		b.WriteString(fmt.Sprintf("%s [%s] %v\r\n%s\r\n", item.When.Format(time.RFC3339), item.Status, item.Duration, item.SQL))
 	}
 	_ = u.historyEntry.SetText(strings.TrimSpace(b.String()))
 }
@@ -1195,7 +1205,7 @@ func (u *applicationUI) appendMessage(msg string) {
 	if strings.TrimSpace(msg) == "" {
 		return
 	}
-	newText := strings.TrimSpace(u.messagesEntry.Text() + "\n" + msg)
+	newText := strings.TrimSpace(u.messagesEntry.Text() + "\r\n" + msg)
 	if len(newText) > outputBufferLimit {
 		newText = newText[len(newText)-outputBufferLimit:]
 	}
@@ -1321,7 +1331,8 @@ func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
 					b.WriteString("- " + message + "\n")
 				}
 			}
-			_ = u.schemaDetails.SetText(strings.TrimSpace(b.String()))
+			detailsText := strings.ReplaceAll(strings.TrimSpace(b.String()), "\n", "\r\n")
+			_ = u.schemaDetails.SetText(detailsText)
 		})
 	}()
 }
