@@ -1604,7 +1604,20 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = layout.SetRange(profileLabel, walk.Rectangle{X: 0, Y: 0, Width: 1, Height: 1})
 
 	profileSelect, _ := walk.NewDropDownBox(dlg)
-	_ = layout.SetRange(profileSelect, walk.Rectangle{X: 1, Y: 0, Width: 3, Height: 1})
+	_ = layout.SetRange(profileSelect, walk.Rectangle{X: 1, Y: 0, Width: 2, Height: 1})
+
+	profileButtons, _ := walk.NewComposite(dlg)
+	pbLayout := walk.NewHBoxLayout()
+	_ = pbLayout.SetMargins(walk.Margins{})
+	_ = pbLayout.SetSpacing(4)
+	_ = profileButtons.SetLayout(pbLayout)
+	_ = layout.SetRange(profileButtons, walk.Rectangle{X: 3, Y: 0, Width: 1, Height: 1})
+	newProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = newProfileBtn.SetText("New")
+	dupProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = dupProfileBtn.SetText("Duplicate")
+	delProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = delProfileBtn.SetText("Delete")
 
 	modeLabel, _ := walk.NewLabel(dlg)
 	_ = modeLabel.SetText("Mode")
@@ -1682,16 +1695,21 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = finalView.SetReadOnly(true)
 	_ = layout.SetRange(finalView, walk.Rectangle{X: 1, Y: 11, Width: 3, Height: 2})
 
-	profileOptions := make([]string, 0, len(u.cfg.Connections))
+	var profileOptions []string
 	profileMap := map[string]config.ConnectionProfile{}
-	for _, p := range u.cfg.Connections {
-		label := p.Name + " [" + p.Type + "]"
-		profileOptions = append(profileOptions, label)
-		profileMap[label] = p
-	}
-	_ = profileSelect.SetModel(profileOptions)
-
 	selectedProfileID := ""
+	// loadProfileList rebuilds the profile picker from the config.
+	loadProfileList := func() {
+		profileOptions = make([]string, 0, len(u.cfg.Connections))
+		profileMap = map[string]config.ConnectionProfile{}
+		for _, p := range u.cfg.Connections {
+			label := app.ProfileLabel(p)
+			profileOptions = append(profileOptions, label)
+			profileMap[label] = p
+		}
+		_ = profileSelect.SetModel(profileOptions)
+	}
+	loadProfileList()
 
 	applyModeVisibility := func() {
 		mode := comboSelected(modeSelect, modeOptions)
@@ -1735,6 +1753,67 @@ func (u *applicationUI) showConnectionWindow() {
 	}
 	profileSelect.CurrentIndexChanged().Attach(fillFromProfile)
 
+	// selectProfile reloads the list and selects the profile with id (or
+	// nothing when id is not found).
+	selectProfile := func(id string) {
+		loadProfileList()
+		selectedProfileID = ""
+		for i, label := range profileOptions {
+			if profileMap[label].ID == id {
+				_ = profileSelect.SetCurrentIndex(i)
+				fillFromProfile()
+				return
+			}
+		}
+		_ = profileSelect.SetCurrentIndex(-1)
+	}
+	clearFields := func() {
+		selectedProfileID = ""
+		_ = profileSelect.SetCurrentIndex(-1)
+		for _, le := range []*walk.LineEdit{nameEntry, userEntry, passEntry, fileEntry} {
+			_ = le.SetText("")
+		}
+		_ = dsnEntry.SetText("")
+		_ = driverEntry.SetText("")
+		_ = connEntry.SetText("")
+		_ = finalView.SetText("")
+		savePasswordCheck.SetChecked(false)
+		_ = nameEntry.SetFocus()
+	}
+	newProfileBtn.Clicked().Attach(clearFields)
+	dupProfileBtn.Clicked().Attach(func() {
+		p, ok := u.cfg.ConnectionByID(selectedProfileID)
+		if !ok {
+			showInfoBox(dlg, "Profiles", "Select a saved profile to duplicate.")
+			return
+		}
+		cp := app.DuplicateProfile(p, u.cfg.Connections, time.Now())
+		u.cfg.UpsertConnection(cp)
+		if err := config.SaveConfig(u.cfg, u.configPath); err != nil {
+			showErrorBox(dlg, "Profiles", err)
+		}
+		selectProfile(cp.ID)
+	})
+	delProfileBtn.Clicked().Attach(func() {
+		p, ok := u.cfg.ConnectionByID(selectedProfileID)
+		if !ok {
+			showInfoBox(dlg, "Profiles", "Select a saved profile to delete.")
+			return
+		}
+		if walk.MsgBox(dlg, "Delete profile", "Delete the profile \""+p.Name+"\"?\nIts saved password is removed too.", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+			return
+		}
+		if p.CredentialRef != "" && u.secrets != nil {
+			_ = u.secrets.Delete(p.CredentialRef)
+		}
+		u.cfg.RemoveConnection(p.ID)
+		if err := config.SaveConfig(u.cfg, u.configPath); err != nil {
+			showErrorBox(dlg, "Profiles", err)
+		}
+		loadProfileList()
+		clearFields()
+	})
+
 	modeSelect.CurrentIndexChanged().Attach(applyModeVisibility)
 	// Preselect the first saved profile after the handler is attached so its
 	// fields are actually filled in (previously the dialog opened with the
@@ -1752,7 +1831,7 @@ func (u *applicationUI) showConnectionWindow() {
 
 		profileID := selectedProfileID
 		if profileID == "" {
-			profileID = generateProfileID(name)
+			profileID = app.NewProfileID(name, time.Now())
 		}
 
 		profile := config.ConnectionProfile{
@@ -1845,8 +1924,20 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = buttonRow.SetLayout(rowLayout)
 	_ = layout.SetRange(buttonRow, walk.Rectangle{X: 0, Y: 13, Width: 4, Height: 1})
 
+	// Inline result of Test / Save (no message box to dismiss).
+	resultLabel, _ := walk.NewLabel(dlg)
+	_ = layout.SetRange(resultLabel, walk.Rectangle{X: 0, Y: 14, Width: 4, Height: 1})
+	setResult := func(ok bool, text string) {
+		if ok {
+			resultLabel.SetTextColor(walk.RGB(0, 110, 0))
+		} else {
+			resultLabel.SetTextColor(walk.RGB(180, 0, 0))
+		}
+		_ = resultLabel.SetText(text)
+	}
+
 	testBtn, _ := walk.NewPushButton(buttonRow)
-	_ = testBtn.SetText("Test")
+	_ = testBtn.SetText("&Test")
 	saveBtn, _ := walk.NewPushButton(buttonRow)
 	_ = saveBtn.SetText("Save Profile")
 	connectBtn, _ := walk.NewPushButton(buttonRow)
@@ -1854,20 +1945,29 @@ func (u *applicationUI) showConnectionWindow() {
 	cancelBtn, _ := walk.NewPushButton(buttonRow)
 	_ = cancelBtn.SetText("Cancel")
 
+	testing := false
 	testBtn.Clicked().Attach(func() {
-		profile, password, buildErr := buildProfile()
-		if buildErr != nil {
-			showErrorBox(dlg, "Connection Test", buildErr)
+		if testing {
 			return
 		}
+		profile, password, buildErr := buildProfile()
+		if buildErr != nil {
+			setResult(false, "Test: "+buildErr.Error())
+			return
+		}
+		testing = true
+		testBtn.SetEnabled(false)
+		setResult(true, "Testing connection…")
 		go func() {
 			elapsed, testErr := u.manager.TestConnection(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
+				testing = false
+				testBtn.SetEnabled(true)
 				if testErr != nil {
-					showErrorBox(dlg, "Connection Test", testErr)
+					setResult(false, "Test failed: "+odbc.MaskSecrets(testErr.Error()))
 					return
 				}
-				showInfoBox(dlg, "Connection Test", "Success in "+elapsed.String())
+				setResult(true, "Test succeeded in "+elapsed.Round(time.Millisecond).String())
 			})
 		}()
 	})
@@ -1879,10 +1979,13 @@ func (u *applicationUI) showConnectionWindow() {
 			return
 		}
 		if err := saveProfile(profile, password); err != nil {
-			showErrorBox(dlg, "Profiles", err)
+			setResult(false, "Not saved: "+err.Error())
 			return
 		}
-		showInfoBox(dlg, "Profiles", "Profile saved.")
+		// Keep editing the saved profile (a second Save updates it instead
+		// of creating another copy).
+		selectProfile(profile.ID)
+		setResult(true, "Profile \""+profile.Name+"\" saved.")
 	})
 
 	connecting := false
@@ -2245,15 +2348,6 @@ func showErrorBox(owner walk.Form, title string, err error) {
 		return
 	}
 	walk.MsgBox(owner, title, err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
-}
-
-func generateProfileID(name string) string {
-	clean := strings.ToLower(strings.TrimSpace(name))
-	clean = strings.ReplaceAll(clean, " ", "-")
-	if clean == "" {
-		clean = "connection"
-	}
-	return fmt.Sprintf("%s-%d", clean, time.Now().UnixNano())
 }
 
 // identQuote is the active connection's identifier quote character
