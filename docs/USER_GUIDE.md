@@ -104,3 +104,11 @@ whether to save. Settings and saved profiles live in `config.json`:
 | Garbled accents | Use the driver's Unicode variant (e.g. *PostgreSQL Unicode*, *MySQL ODBC 8.x Unicode Driver*) instead of the ANSI one. |
 | Windows SmartScreen warns on first start | The exe is not code-signed. Choose *More info → Run anyway* if you got it from a trusted source. |
 | Nothing happens on F5 | The editor must have the focus; click into the SQL text first. |
+
+## Query history
+
+The History tab lists the last 50 statements of the session (passwords are masked).
+To keep history between sessions, enable **Tools > Settings > Save query history between
+sessions**. Entries are then stored in `history.jsonl` next to `config.json` (file mode
+private to your user, capped at 1000 entries) and reloaded when you connect with the same
+profile. Delete that file to clear it.

@@ -24,6 +24,9 @@ type AppConfig struct {
 	Theme    string        `json:"theme"`
 	Window   WindowConfig  `json:"window"`
 	Logging  LoggingConfig `json:"logging"`
+	// SaveHistory persists executed statements (passwords masked) to
+	// history.jsonl next to config.json. Off by default.
+	SaveHistory bool `json:"saveHistory,omitempty"`
 }
 
 type WindowConfig struct {

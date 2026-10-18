@@ -103,6 +103,12 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		CreatedAt:   time.Now(),
 		SchemaCache: NewSchemaCache(),
 	}
+	if m.historyLoad != nil {
+		session.History = m.historyLoad(profile.ID)
+		if len(session.History) > maxHistoryEntries {
+			session.History = session.History[len(session.History)-maxHistoryEntries:]
+		}
+	}
 	m.sessions[session.ID] = session
 	if m.activeID == "" {
 		m.activeID = session.ID
@@ -286,6 +292,20 @@ func (m *Manager) addHistory(session *Session, sqlText, status string, duration 
 		history = history[len(history)-maxHistoryEntries:]
 	}
 	session.History = history
+	if m.historySave != nil {
+		m.historySave(session.Profile.ID, entry)
+	}
+}
+
+// SetHistoryHooks enables persisted history: save is called (with the
+// Manager lock held: it must not call back into the Manager) for every
+// executed statement, already masked; load pre-fills a new session's
+// history for its profile. nil hooks disable persistence.
+func (m *Manager) SetHistoryHooks(save func(profileID string, e HistoryEntry), load func(profileID string) []HistoryEntry) {
+	m.mu.Lock()
+	m.historySave = save
+	m.historyLoad = load
+	m.mu.Unlock()
 }
 
 func (m *Manager) CancelExecution(sessionID string) error {

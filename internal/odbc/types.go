@@ -62,6 +62,9 @@ type Manager struct {
 	// catalogOpener opens a native ODBC catalog connection (SQLTables,
 	// SQLColumns, SQLGetInfo, …). nil means INFORMATION_SCHEMA/PRAGMA only.
 	catalogOpener CatalogOpener
+	// history hooks (persisted history, opt-in); see SetHistoryHooks.
+	historySave func(profileID string, e HistoryEntry)
+	historyLoad func(profileID string) []HistoryEntry
 }
 
 type QueryOptions struct {

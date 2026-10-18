@@ -12,6 +12,7 @@ type Settings struct {
 	MaxRows        int  // rows fetched before "Load more"
 	PageSize       int  // rows added by "Load more"
 	StopOnError    bool // stop a script at the first failing statement
+	SaveHistory    bool // persist executed statements (masked) to history.jsonl
 }
 
 // Limits for the settings dialog.
@@ -22,8 +23,10 @@ const (
 )
 
 // SettingsFromConfig reads the settings from the config.
-func SettingsFromConfig(q config.QueryConfig) Settings {
+func SettingsFromConfig(cfg config.Config) Settings {
+	q := cfg.Query
 	return Settings{
+		SaveHistory:    cfg.App.SaveHistory,
 		TimeoutSeconds: q.DefaultTimeoutMs / 1000,
 		MaxRows:        q.DefaultMaxRows,
 		PageSize:       q.FetchPageSize,
@@ -46,10 +49,12 @@ func (s Settings) Validate() error {
 }
 
 // Apply writes valid settings into the config.
-func (s Settings) Apply(q *config.QueryConfig) error {
+func (s Settings) Apply(cfg *config.Config) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
+	cfg.App.SaveHistory = s.SaveHistory
+	q := &cfg.Query
 	q.DefaultTimeoutMs = s.TimeoutSeconds * 1000
 	q.DefaultMaxRows = s.MaxRows
 	q.FetchPageSize = s.PageSize

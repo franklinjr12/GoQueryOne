@@ -232,6 +232,7 @@ func (u *applicationUI) run() error {
 		return err
 	}
 	u.restoreProfiles()
+	u.applyHistorySetting()
 	u.refreshState()
 	u.placeMainWindow()
 	u.showMainWindow()
