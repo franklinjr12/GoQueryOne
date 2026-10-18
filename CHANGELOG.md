@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 - Click a results column header to sort (numbers numerically, NULLs first;
   click again for descending, click `#` for the original order). Copy and
   export follow the displayed order.
+- File > Recent files (last 10 opened or saved files; a missing file is
+  dropped from the list; "Clear list").
 
 ### Fixed
 - Rename tab (and other one-line prompts) ignored the typed text.

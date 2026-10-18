@@ -34,6 +34,8 @@ type AppConfig struct {
 	// OpenFiles are the SQL files open in editor tabs at exit (reopened at
 	// startup; unsaved untitled tabs are not kept).
 	OpenFiles []string `json:"openFiles,omitempty"`
+	// RecentFiles feeds File > Recent files (most recent first).
+	RecentFiles []string `json:"recentFiles,omitempty"`
 }
 
 type WindowConfig struct {

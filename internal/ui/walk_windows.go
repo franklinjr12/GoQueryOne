@@ -5,6 +5,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -258,6 +259,7 @@ func (u *applicationUI) run() error {
 	u.applyHistorySetting()
 	u.restoreOpenFiles()
 	u.refreshConnectToMenu()
+	u.refreshRecentMenu()
 	u.refreshState()
 	u.placeMainWindow()
 	// Restore splitters once the window is shown and laid out.
@@ -337,7 +339,7 @@ func (u *applicationUI) build() error {
 		u.saveMainWindowPlacement()
 		u.cfg.App.OpenFiles = u.openFilePaths()
 		for _, sp := range u.splitters {
-			_ = sp.SaveState()
+			saveSplitterState(sp)
 		}
 		_ = config.SaveConfig(u.cfg, u.configPath)
 		u.manager.DisconnectAll()
@@ -348,6 +350,19 @@ func (u *applicationUI) build() error {
 	})
 
 	return nil
+}
+
+// saveSplitterState saves a splitter's layout; a walk failure is logged and
+// must never stop the config from being saved on exit.
+func saveSplitterState(sp *walk.Splitter) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("saving splitter state: %v", r)
+		}
+	}()
+	if err := sp.SaveState(); err != nil {
+		log.Printf("saving splitter state: %v", err)
+	}
 }
 
 func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
@@ -578,7 +593,9 @@ func (u *applicationUI) openSQLFile() {
 
 	if err := u.openSQLPath(dlg.FilePath); err != nil {
 		showErrorBox(u.mainWindow, "Open SQL", err)
+		return
 	}
+	u.noteRecentFile(dlg.FilePath)
 }
 
 // openSQLPath opens a SQL file in a new editor tab.
@@ -821,6 +838,10 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 	if err != nil {
 		return nil, err
 	}
+	// Columns change with every query, so walk must not save/restore the
+	// grid's column state with the splitters. (walk's TableView.SaveState
+	// also panics when a sortable model has no sorted column yet.)
+	u.resultsTable.SetPersistent(false)
 	if err := u.resultsTable.SetModel(u.resultsModel); err != nil {
 		return nil, err
 	}
@@ -1100,6 +1121,7 @@ func (u *applicationUI) saveTab(tab *sqlEditorTab, asNew bool) bool {
 	tab.Title = filepath.Base(path)
 	tab.Dirty = false
 	u.refreshTabTitle(tab)
+	u.noteRecentFile(path)
 	return true
 }
 

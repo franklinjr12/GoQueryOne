@@ -29,6 +29,8 @@ type uiActions struct {
 	connect, disconnect                             *walk.Action
 	connectTo                                       *walk.Action // submenu: saved profiles
 	connectToMenu                                   *walk.Menu
+	recentMenu                                      *walk.Menu
+	recent                                          *walk.Action
 	newTab, open, save, saveAs, closeTab, renameTab *walk.Action
 	exit                                            *walk.Action
 	copyRows, copyAll, copyCSV, copyHeaders         *walk.Action
@@ -166,12 +168,18 @@ func (u *applicationUI) buildActions() error {
 		_ = a.connectTo.SetText("Connect &to")
 	}
 
+	if m, err := walk.NewMenu(); err == nil {
+		a.recentMenu = m
+		a.recent = walk.NewMenuAction(m)
+		_ = a.recent.SetText("&Recent files")
+	}
+
 	mw := u.mainWindow
 	menus := []struct {
 		title   string
 		actions []*walk.Action
 	}{
-		{"&File", []*walk.Action{a.newTab, a.open, a.save, a.saveAs, nil, a.renameTab, a.closeTab, nil, a.exit}},
+		{"&File", []*walk.Action{a.newTab, a.open, a.save, a.saveAs, nil, a.recent, nil, a.renameTab, a.closeTab, nil, a.exit}},
 		{"&Edit", []*walk.Action{a.find, a.findNext, nil, a.copyRows, a.copyHeaders, a.copyAll, a.copyCSV}},
 		{"&Query", []*walk.Action{a.run, a.runScript, a.cancel, a.loadMore, nil, a.begin, a.commit, a.rollback}},
 		{"&View", []*walk.Action{a.refreshSchema, a.toggleText}},

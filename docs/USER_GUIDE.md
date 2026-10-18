@@ -91,7 +91,8 @@ the next page.
 ## 5. Files and settings
 
 SQL tabs can be saved as `.sql` files. Closing a modified tab or exiting asks
-whether to save. Settings and saved profiles live in `config.json`:
+whether to save. **File → Recent files** lists the last 10 files you opened or
+saved; choosing one that is already open switches to its tab. Settings and saved profiles live in `config.json`:
 
 - next to the exe if `portable.flag` exists there or the folder is writable
   (portable mode, e.g. on a USB stick);

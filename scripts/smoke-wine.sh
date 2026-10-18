@@ -58,6 +58,7 @@ RUN=dist/smoke/run
 mkdir -p "$RUN"
 cp dist/smoke/GoQueryOne-x64.exe "$RUN/"
 touch "$RUN/portable.flag"
+rm -f "$RUN/crash.log"
 cat > "$RUN/config.json" <<JSON
 {
   "schemaVersion": 1,
@@ -144,6 +145,23 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   xdotool mousemove 1060 500 click 1; sleep 1                 # "balance" header: ascending
   xdotool mousemove 1060 500 click 1                          # again: descending
   shot 18-sort-desc 2
+  # 19) clean exit: Alt+F4, "Don't save" for the edited tab; the app must
+  # save config.json and leave no crash.log behind.
+  touch "$OUT/.before-exit"
+  for i in 1 2; do
+    focus_main; xdotool key alt+F4
+    UD=$(timeout 5 bash -c "until xdotool search --name '^Unsaved changes$' >/dev/null 2>&1; do sleep 0.5; done; xdotool search --name '^Unsaved changes$' | head -1")
+    [ -n "$UD" ] && break
+  done
+  if [ -n "$UD" ]; then xdotool windowfocus "$UD"; sleep 0.3; xdotool key n; fi
+  timeout 15 bash -c 'while pgrep -f GoQueryOne-x64.exe >/dev/null; do sleep 0.5; done'
+  if [ -f "$RUN/crash.log" ]; then
+    cp "$RUN/crash.log" "$OUT/crash.log"; echo "smoke-wine: FAIL crash.log written on exit (copied to $OUT)"
+  elif [ "$RUN/config.json" -nt "$OUT/.before-exit" ]; then
+    echo "smoke-wine: clean exit OK (config.json saved, no crash.log)"
+  else
+    echo "smoke-wine: WARN config.json not saved on exit"
+  fi
   set -e
 fi
 
