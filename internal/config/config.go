@@ -40,6 +40,8 @@ type WindowConfig struct {
 	Y      float32 `json:"y"`
 	// Bounds above are physical pixels of the restored (non-maximized) window.
 	Maximized bool `json:"maximized,omitempty"`
+	// Splitters holds splitter positions (walk state strings, pixels).
+	Splitters map[string]string `json:"splitters,omitempty"`
 }
 
 type LoggingConfig struct {

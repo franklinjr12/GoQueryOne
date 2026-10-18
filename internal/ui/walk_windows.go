@@ -129,6 +129,7 @@ type applicationUI struct {
 
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
+	splitters      []*walk.Splitter
 
 	outputTabs     *walk.TabWidget
 	resultsTable   *walk.TableView
@@ -235,6 +236,12 @@ func (u *applicationUI) run() error {
 	u.applyHistorySetting()
 	u.refreshState()
 	u.placeMainWindow()
+	// Restore splitters once the window is shown and laid out.
+	u.mainWindow.Synchronize(func() {
+		for _, sp := range u.splitters {
+			_ = sp.RestoreState()
+		}
+	})
 	u.showMainWindow()
 	if tab := u.currentEditorTab(); tab != nil {
 		_ = tab.Editor.SetFocus()
@@ -285,12 +292,28 @@ func (u *applicationUI) build() error {
 
 	_ = layout.SetStretchFactor(mainSplit, 1)
 
+	// Splitter positions persist in config.json through walk's state API.
+	u.mainWindow.SetName("main")
+	if client := mainSplit.Parent(); client != nil {
+		client.SetName("client")
+	}
+	mainSplit.SetName("mainSplit")
+	rightSplit.SetName("rightSplit")
+	u.splitters = []*walk.Splitter{mainSplit, rightSplit}
+	if u.cfg.App.Window.Splitters == nil {
+		u.cfg.App.Window.Splitters = map[string]string{}
+	}
+	walk.App().SetSettings(app.NewUIState(u.cfg.App.Window.Splitters, "main/"))
+
 	u.mainWindow.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		if !u.confirmDiscardAll() {
 			*canceled = true
 			return
 		}
 		u.saveMainWindowPlacement()
+		for _, sp := range u.splitters {
+			_ = sp.SaveState()
+		}
 		_ = config.SaveConfig(u.cfg, u.configPath)
 		u.manager.DisconnectAll()
 	})
