@@ -130,6 +130,8 @@ type applicationUI struct {
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
 	splitters      []*walk.Splitter
+	// preselectProfileID makes the next connection dialog open on this profile.
+	preselectProfileID string
 
 	outputTabs     *walk.TabWidget
 	resultsTable   *walk.TableView
@@ -235,6 +237,7 @@ func (u *applicationUI) run() error {
 	u.restoreProfiles()
 	u.applyHistorySetting()
 	u.restoreOpenFiles()
+	u.refreshConnectToMenu()
 	u.refreshState()
 	u.placeMainWindow()
 	// Restore splitters once the window is shown and laid out.
@@ -1909,7 +1912,14 @@ func (u *applicationUI) showConnectionWindow() {
 	// fields are actually filled in (previously the dialog opened with the
 	// profile selected but empty fields).
 	if len(profileOptions) > 0 {
-		_ = profileSelect.SetCurrentIndex(0)
+		idx := 0
+		for i, label := range profileOptions {
+			if profileMap[label].ID == u.preselectProfileID {
+				idx = i
+			}
+		}
+		u.preselectProfileID = ""
+		_ = profileSelect.SetCurrentIndex(idx)
 		fillFromProfile()
 	}
 
@@ -2127,6 +2137,7 @@ func (u *applicationUI) showConnectionWindow() {
 
 	applyModeVisibility()
 	connected := dlg.Run() == walk.DlgCmdOK
+	u.refreshConnectToMenu() // profiles may have been added, renamed or deleted
 	if connected {
 		// Fill the schema browser right away (cached per session; F8 refreshes).
 		u.loadSchema(false)

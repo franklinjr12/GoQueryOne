@@ -27,6 +27,8 @@ const userGuideURL = "https://github.com/franklinjr12/GoQueryOne#readme"
 // consistent; enablement is driven by the presenter (internal/app).
 type uiActions struct {
 	connect, disconnect                             *walk.Action
+	connectTo                                       *walk.Action // submenu: saved profiles
+	connectToMenu                                   *walk.Menu
 	newTab, open, save, saveAs, closeTab, renameTab *walk.Action
 	exit                                            *walk.Action
 	copyRows, copyAll, copyCSV, copyHeaders         *walk.Action
@@ -154,6 +156,12 @@ func (u *applicationUI) buildActions() error {
 	a.help = u.newAction("User guide", "help", key(walk.KeyF1), u.openUserGuide)
 	a.about = u.newAction("About GoQueryOne", "", walk.Shortcut{}, u.showAbout)
 
+	if m, err := walk.NewMenu(); err == nil {
+		a.connectToMenu = m
+		a.connectTo = walk.NewMenuAction(m)
+		_ = a.connectTo.SetText("Connect &to")
+	}
+
 	mw := u.mainWindow
 	menus := []struct {
 		title   string
@@ -163,7 +171,7 @@ func (u *applicationUI) buildActions() error {
 		{"&Edit", []*walk.Action{a.copyRows, a.copyHeaders, a.copyAll, a.copyCSV}},
 		{"&Query", []*walk.Action{a.run, a.runScript, a.cancel, a.loadMore, nil, a.begin, a.commit, a.rollback}},
 		{"&View", []*walk.Action{a.refreshSchema, a.toggleText}},
-		{"&Tools", []*walk.Action{a.connect, a.disconnect, nil, a.odbcAdminNative, a.odbcAdmin64, a.odbcAdmin32, nil, a.export, nil, a.settings}},
+		{"&Tools", []*walk.Action{a.connect, a.connectTo, a.disconnect, nil, a.odbcAdminNative, a.odbcAdmin64, a.odbcAdmin32, nil, a.export, nil, a.settings}},
 		{"&Help", []*walk.Action{a.help, a.about}},
 	}
 	for _, m := range menus {
