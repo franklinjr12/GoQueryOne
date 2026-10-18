@@ -661,7 +661,7 @@ func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite
 		if selected == nil {
 			return
 		}
-		_ = walk.Clipboard().SetText(qualifiedName(*selected))
+		_ = walk.Clipboard().SetText(u.sqlName(*selected))
 	})
 
 	u.schemaDetails, err = walk.NewTextEdit(split)
@@ -1410,7 +1410,7 @@ func (u *applicationUI) generateQuickQuery(mode string) {
 		return
 	}
 
-	name := qualifiedName(*selected)
+	name := u.sqlName(*selected)
 	query := "SELECT * FROM " + name + ";"
 	switch mode {
 	case "count":
@@ -2255,11 +2255,23 @@ func generateProfileID(name string) string {
 	return fmt.Sprintf("%s-%d", clean, time.Now().UnixNano())
 }
 
-func qualifiedName(t odbc.SchemaTable) string {
-	if strings.TrimSpace(t.Schema) == "" {
-		return t.Name
+// identQuote is the active connection's identifier quote character
+// (SQLGetInfo), or "" when unknown.
+func (u *applicationUI) identQuote() string {
+	session, err := u.manager.ActiveSession()
+	if err != nil {
+		return ""
 	}
-	return t.Schema + "." + t.Name
+	info, err := u.manager.DBInfo(session.ID)
+	if err != nil {
+		return ""
+	}
+	return info.IdentifierQuote
+}
+
+// sqlName is a table name ready for generated SQL (quoted when needed).
+func (u *applicationUI) sqlName(t odbc.SchemaTable) string {
+	return core.QualifiedName(t.Schema, t.Name, u.identQuote())
 }
 
 func executablePath() string {

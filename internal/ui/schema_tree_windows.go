@@ -83,7 +83,7 @@ func (u *applicationUI) buildSchemaTree(parent walk.Container, layout *walk.BoxL
 		case app.NodeTable:
 			u.generateQuickQuery("top")
 		case app.NodeColumn:
-			u.insertAtCaret(node.Column)
+			u.insertAtCaret(core.QuoteIdent(node.Column, u.identQuote()))
 		}
 	})
 
@@ -103,16 +103,16 @@ func (u *applicationUI) buildSchemaTree(parent walk.Container, layout *walk.BoxL
 	_ = menu.Actions().Add(walk.NewSeparatorAction())
 	add("Insert name at caret", func() {
 		if node := u.currentSchemaNode(); node != nil && node.Kind == app.NodeColumn {
-			u.insertAtCaret(node.Column)
+			u.insertAtCaret(core.QuoteIdent(node.Column, u.identQuote()))
 		} else if t := u.selectedSchemaTable(); t != nil {
-			u.insertAtCaret(qualifiedName(*t))
+			u.insertAtCaret(u.sqlName(*t))
 		}
 	})
 	add("Copy name", func() {
 		if node := u.currentSchemaNode(); node != nil && node.Kind == app.NodeColumn {
-			_ = walk.Clipboard().SetText(node.Column)
+			_ = walk.Clipboard().SetText(core.QuoteIdent(node.Column, u.identQuote()))
 		} else if t := u.selectedSchemaTable(); t != nil {
-			_ = walk.Clipboard().SetText(qualifiedName(*t))
+			_ = walk.Clipboard().SetText(u.sqlName(*t))
 		}
 	})
 	_ = menu.Actions().Add(walk.NewSeparatorAction())
