@@ -6,7 +6,7 @@
 #   docker buildx build --output type=local,dest=out .
 #   -> out/GoQueryOne-x64.exe, out/GoQueryOne-x86.exe
 
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 ARG VERSION=dev
 ARG COMMIT=unknown
 ENV CGO_ENABLED=0 GOOS=windows
