@@ -89,7 +89,7 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   focus_main
   xdotool mousemove 700 600 click 1
   xdotool key ctrl+shift+c                                   # Tools > Connect
-  DLG=$(timeout 10 bash -c "until xdotool search --name '^Connection$' >/dev/null 2>&1; do sleep 0.5; done; xdotool search --name '^Connection$' | head -1")
+  DLG=$(timeout 10 bash -c "until xdotool search --name '^Connection( |$)' >/dev/null 2>&1; do sleep 0.5; done; xdotool search --name '^Connection( |$)' | head -1")
   shot 02-connect-dialog 2
   if [ -n "$DLG" ]; then xdotool windowfocus "$DLG"; sleep 0.3; xdotool key alt+t; sleep 0.3; xdotool key alt+t; fi   # Test (inline result; first key can be lost)
   shot 02b-connect-test 3

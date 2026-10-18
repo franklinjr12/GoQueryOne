@@ -34,7 +34,16 @@ func BuildConnectionString(profile config.ConnectionProfile, password string) (s
 		if strings.TrimSpace(profile.Driver) == "" {
 			return "", errors.New("driver is required")
 		}
+		// In Driver mode ConnectionString holds the extra attributes
+		// (Server=...;Database=...;) appended after the driver.
+		extra := strings.TrimSpace(base)
 		base = "Driver=" + braceConnValue(profile.Driver) + ";"
+		if extra != "" {
+			if !strings.HasSuffix(extra, ";") {
+				extra += ";"
+			}
+			base += strings.TrimLeft(extra, "; ")
+		}
 	default:
 		return "", fmt.Errorf("unsupported connection profile type %q", profile.Type)
 	}

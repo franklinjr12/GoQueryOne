@@ -1585,7 +1585,8 @@ func (u *applicationUI) showConnectionWindow() {
 		showErrorBox(u.mainWindow, "Connection", err)
 		return
 	}
-	_ = dlg.SetTitle("Connection")
+	// The bitness decides which ODBC drivers/DSNs are visible.
+	_ = dlg.SetTitle("Connection - " + buildinfo.Arch() + " build: uses " + bitnessWord() + " ODBC drivers and DSNs")
 	_ = dlg.SetMinMaxSize(walk.Size{Width: 980, Height: 460}, walk.Size{})
 
 	layout := walk.NewGridLayout()
@@ -1652,7 +1653,16 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = layout.SetRange(fileLabel, walk.Rectangle{X: 0, Y: 4, Width: 1, Height: 1})
 
 	fileEntry, _ := walk.NewLineEdit(dlg)
-	_ = layout.SetRange(fileEntry, walk.Rectangle{X: 1, Y: 4, Width: 3, Height: 1})
+	_ = layout.SetRange(fileEntry, walk.Rectangle{X: 1, Y: 4, Width: 2, Height: 1})
+	browseBtn, _ := walk.NewPushButton(dlg)
+	_ = browseBtn.SetText("Browse…")
+	_ = layout.SetRange(browseBtn, walk.Rectangle{X: 3, Y: 4, Width: 1, Height: 1})
+	browseBtn.Clicked().Attach(func() {
+		fd := walk.FileDialog{Title: "File DSN", Filter: "File DSN (*.dsn)|*.dsn|All files (*.*)|*.*", FilePath: fileEntry.Text()}
+		if ok, _ := fd.ShowOpen(dlg); ok {
+			_ = fileEntry.SetText(fd.FilePath)
+		}
+	})
 
 	connLabel, _ := walk.NewLabel(dlg)
 	_ = connLabel.SetText("Connection string")
@@ -1660,6 +1670,22 @@ func (u *applicationUI) showConnectionWindow() {
 
 	connEntry, _ := walk.NewTextEdit(dlg)
 	_ = layout.SetRange(connEntry, walk.Rectangle{X: 1, Y: 5, Width: 3, Height: 2})
+
+	// Templates fill the connection string with <placeholders> to replace.
+	templateNames := app.ConnTemplateNames()
+	templateSelect, _ := walk.NewDropDownBox(dlg)
+	_ = templateSelect.SetModel(templateNames)
+	_ = templateSelect.SetCurrentIndex(0)
+	_ = layout.SetRange(templateSelect, walk.Rectangle{X: 0, Y: 6, Width: 1, Height: 1})
+	templateSelect.CurrentIndexChanged().Attach(func() {
+		i := templateSelect.CurrentIndex()
+		if i <= 0 || i > len(app.ConnTemplates) {
+			return
+		}
+		_ = connEntry.SetText(app.ConnTemplates[i-1].Template)
+		_ = templateSelect.SetCurrentIndex(0)
+		_ = connEntry.SetFocus()
+	})
 
 	nameLabel, _ := walk.NewLabel(dlg)
 	_ = nameLabel.SetText("Name")
@@ -1719,8 +1745,16 @@ func (u *applicationUI) showConnectionWindow() {
 		driverEntry.SetVisible(mode == "Driver")
 		fileLabel.SetVisible(mode == "File DSN")
 		fileEntry.SetVisible(mode == "File DSN")
-		connLabel.SetVisible(mode == "Connection string")
-		connEntry.SetVisible(mode == "Connection string")
+		browseBtn.SetVisible(mode == "File DSN")
+		// Driver mode reuses the text box for extra attributes.
+		connLabel.SetVisible(mode == "Connection string" || mode == "Driver")
+		connEntry.SetVisible(mode == "Connection string" || mode == "Driver")
+		templateSelect.SetVisible(mode == "Connection string")
+		if mode == "Driver" {
+			_ = connLabel.SetText("Attributes (Server=…;Database=…)")
+		} else {
+			_ = connLabel.SetText("Connection string")
+		}
 	}
 
 	fillFromProfile := func() {
@@ -1856,6 +1890,7 @@ func (u *applicationUI) showConnectionWindow() {
 				return profile, password, errors.New("driver is required")
 			}
 			profile.Type = "driver"
+			profile.ConnectionString = strings.TrimSpace(connEntry.Text())
 		case "File DSN":
 			if profile.FilePath == "" {
 				return profile, password, errors.New("file DSN path is required")
@@ -1884,6 +1919,9 @@ func (u *applicationUI) showConnectionWindow() {
 			}
 		}
 
+		if missing := core.UnfilledPlaceholders(profile.ConnectionString); len(missing) > 0 && (profile.Type == "connection_string" || profile.Type == "driver") {
+			return profile, password, errors.New("replace the template placeholders: " + strings.Join(missing, ", "))
+		}
 		finalConn, err := odbc.BuildConnectionString(profile, password)
 		if err != nil {
 			return profile, password, err
@@ -2375,4 +2413,12 @@ func executablePath() string {
 		return ""
 	}
 	return exe
+}
+
+// bitnessWord is "64-bit" or "32-bit" for the running exe.
+func bitnessWord() string {
+	if strconv.IntSize == 32 {
+		return "32-bit"
+	}
+	return "64-bit"
 }

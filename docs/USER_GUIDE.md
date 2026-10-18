@@ -112,3 +112,15 @@ To keep history between sessions, enable **Tools > Settings > Save query history
 sessions**. Entries are then stored in `history.jsonl` next to `config.json` (file mode
 private to your user, capped at 1000 entries) and reloaded when you connect with the same
 profile. Delete that file to clear it.
+
+## Connection profiles
+
+- **New / Duplicate / Delete** next to the profile picker manage saved profiles. A duplicate
+  never shares the saved password; deleting a profile also removes its saved password.
+- **Driver** mode takes extra attributes (for example `Server=db1;Database=sales;`).
+- **Connection string** mode has an *Insert template…* list (SQL Server, PostgreSQL, MySQL,
+  Oracle, Db2, Access, Excel, SQLite). Replace every `<placeholder>`; Test/Connect refuse a
+  string that still contains one. Username and password come from their own fields.
+- **File DSN** mode has a Browse… button.
+- The dialog title shows whether the exe uses 32-bit or 64-bit ODBC drivers and DSNs.
+- Test shows its result under the buttons instead of in a message box.
