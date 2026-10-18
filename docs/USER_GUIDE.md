@@ -104,6 +104,8 @@ whether to save. Settings and saved profiles live in `config.json`:
 | Garbled accents | Use the driver's Unicode variant (e.g. *PostgreSQL Unicode*, *MySQL ODBC 8.x Unicode Driver*) instead of the ANSI one. |
 | Windows SmartScreen warns on first start | The exe is not code-signed. Choose *More info → Run anyway* if you got it from a trusted source. |
 | Nothing happens on F5 | The editor must have the focus; click into the SQL text first. |
+| "The settings file could not be read" at start | `config.json` was damaged (e.g. edited by hand). It was kept as `config.json.broken-<date-time>`; copy your connections back from it. |
+| GoQueryOne closed with "unexpected error" | Details are in `crash.log` next to `config.json`; please attach it (and `logs.txt`) to a bug report. |
 
 ## Query history
 
@@ -115,6 +117,8 @@ profile. Delete that file to clear it.
 
 ## Connection profiles
 
+- **Tools > Connect to** lists saved profiles and connects in one step (the dialog opens only
+  when a password must be typed).
 - **New / Duplicate / Delete** next to the profile picker manage saved profiles. A duplicate
   never shares the saved password; deleting a profile also removes its saved password.
 - **Driver** mode takes extra attributes (for example `Server=db1;Database=sales;`).
