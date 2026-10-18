@@ -2093,6 +2093,7 @@ func (u *applicationUI) showConnectionWindow() {
 			resultLabel.SetTextColor(walk.RGB(180, 0, 0))
 		}
 		_ = resultLabel.SetText(text)
+		_ = resultLabel.SetToolTipText(text)
 	}
 
 	testBtn, _ := walk.NewPushButton(buttonRow)
@@ -2128,7 +2129,13 @@ func (u *applicationUI) showConnectionWindow() {
 				testing = false
 				testBtn.SetEnabled(true)
 				if testErr != nil {
-					setResult(false, "Test failed: "+odbc.MaskSecrets(testErr.Error()))
+					full := odbc.MaskSecrets(testErr.Error())
+					msg := "Test failed: " + app.OneLine(full)
+					if h := app.ConnectErrorHint(full, buildinfo.Arch()); h != "" {
+						msg += "  ->  " + h
+					}
+					setResult(false, msg)
+					_ = resultLabel.SetToolTipText(app.WithConnectHint(full, buildinfo.Arch()))
 					return
 				}
 				setResult(true, "Test succeeded in "+elapsed.Round(time.Millisecond).String())
@@ -2176,7 +2183,7 @@ func (u *applicationUI) showConnectionWindow() {
 				connectBtn.SetEnabled(true)
 				_ = connectBtn.SetText("&Connect")
 				if connectErr != nil {
-					showErrorBox(dlg, "Connect", connectErr)
+					showConnectError(dlg, "Connect", connectErr)
 					return
 				}
 				if saveErr := saveProfile(profile, password); saveErr != nil {
@@ -2566,6 +2573,15 @@ func executablePath() string {
 		return ""
 	}
 	return exe
+}
+
+// showConnectError shows a connect failure with an actionable hint for
+// common SQLSTATEs (IM014 bitness mismatch, IM002 unknown DSN, login...).
+func showConnectError(owner walk.Form, title string, err error) {
+	if err == nil {
+		return
+	}
+	walk.MsgBox(owner, title, app.WithConnectHint(odbc.MaskSecrets(err.Error()), buildinfo.Arch()), walk.MsgBoxOK|walk.MsgBoxIconError)
 }
 
 // bitnessWord is "64-bit" or "32-bit" for the running exe.

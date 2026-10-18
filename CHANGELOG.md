@@ -13,9 +13,13 @@ All notable changes to this project are documented here. The format follows
   export follow the displayed order.
 - File > Recent files (last 10 opened or saved files; a missing file is
   dropped from the list; "Clear list").
+- Connect and Test failures carry a one-line hint for common SQLSTATEs
+  (IM014 bitness mismatch, IM002 unknown DSN/driver, IM003, 28000 login,
+  08001 unreachable, HYT00 timeout, driver manager init failure).
 
 ### Fixed
 - Rename tab (and other one-line prompts) ignored the typed text.
+- A Test failure with several diagnostic records showed only the first line.
 - Each statement is executed **exactly once**. Previously a statement that
   failed on the query path was retried as a command, so an `INSERT` could run
   twice.

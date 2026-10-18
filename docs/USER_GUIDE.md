@@ -101,6 +101,10 @@ saved; choosing one that is already open switches to its tab. Settings and saved
 
 ## 6. Troubleshooting
 
+Failed **Test** and **Connect** attempts show a short hint after the driver's
+message for the common cases below (hover over the Test result to see the full
+text).
+
 | Message | Cause and fix |
 |---|---|
 | `IM014` *architecture mismatch between the Driver and Application* | The DSN's driver has the other bitness. Use the other exe (x86 vs x64) or recreate the DSN in the matching ODBC Administrator. |

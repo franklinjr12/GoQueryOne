@@ -73,7 +73,7 @@ func (u *applicationUI) quickConnect(profileID string) {
 		u.mainWindow.Synchronize(func() {
 			u.updateStatus()
 			if err != nil {
-				showErrorBox(u.mainWindow, "Connect to "+p.Name, err)
+				showConnectError(u.mainWindow, "Connect to "+p.Name, err)
 				return
 			}
 			u.refreshSessionSelect()
