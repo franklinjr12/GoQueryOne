@@ -266,7 +266,7 @@ func SaveConfig(config *Config, path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write config %s: %w", path, err)
 	}
 	return nil

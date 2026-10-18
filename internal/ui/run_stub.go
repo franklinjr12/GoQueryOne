@@ -15,3 +15,6 @@ func Run(cfgPath string) error {
 func RunWithConfig(cfgPath string, cfg *config.Config) error {
 	return errors.New("GUI supported only on Windows")
 }
+
+// ShowMessage is a no-op outside Windows.
+func ShowMessage(title, text string, isError bool) {}
