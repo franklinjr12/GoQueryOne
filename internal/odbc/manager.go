@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/alexbrainman/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 )
 
