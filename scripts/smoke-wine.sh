@@ -138,6 +138,12 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   if [ -n "$FD" ]; then xdotool windowfocus "$FD"; sleep 0.5; fi
   xdotool type --delay 30 "orders"; sleep 0.3; xdotool key Return
   shot 12-find 2
+  focus_editor; xdotool key ctrl+Home; sleep 0.3; xdotool key F5   # rerun the customers SELECT
+  sleep 2; focus_main
+  xdotool mousemove 698 474 click 1; sleep 1                 # Results tab
+  xdotool mousemove 1060 500 click 1; sleep 1                 # "balance" header: ascending
+  xdotool mousemove 1060 500 click 1                          # again: descending
+  shot 18-sort-desc 2
   set -e
 fi
 

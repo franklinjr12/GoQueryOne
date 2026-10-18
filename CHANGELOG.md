@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 - Edit > Find (Ctrl+F) and Find next (F3) in the SQL editor.
+- Click a results column header to sort (numbers numerically, NULLs first;
+  click again for descending, click `#` for the original order). Copy and
+  export follow the displayed order.
 
 ### Fixed
 - Rename tab (and other one-line prompts) ignored the typed text.

@@ -80,6 +80,9 @@ the next page.
 - `(null)` in grey is a database NULL. The text `'NULL'` is shown as `NULL`.
 - Select rows with click, Shift+click, Ctrl+click or Ctrl+A; **Ctrl+C**
   copies them as tab-separated text that pastes into Excel.
+- Click a column header to sort the results (numeric columns sort as numbers,
+  `(null)` first); click it again for descending order and click `#` to get
+  the original order back. Copy and export use the order on screen.
 - **Edit** menu: copy selected rows (with or without headers), copy all as
   TSV or CSV.
 - **File → Export results…** writes CSV, TSV, JSON, Markdown or plain text.

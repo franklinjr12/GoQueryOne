@@ -39,9 +39,22 @@ type sqlEditorTab struct {
 
 type resultsTableModel struct {
 	walk.TableModelBase
+	walk.SorterBase
 	columns []string
 	rows    [][]string
 	nulls   [][]bool
+	sorter  *core.RowSorter
+}
+
+// Sort is called by walk on a header click. Rows are reordered in place
+// (shared with applicationUI.resultsRows, so copy/export follow the view);
+// the row-number column restores the original order.
+func (m *resultsTableModel) Sort(col int, order walk.SortOrder) error {
+	if m.sorter != nil && len(m.columns) > 0 {
+		m.sorter.SortByColumn(col-1, order == walk.SortDescending)
+		m.PublishRowsReset()
+	}
+	return m.SorterBase.Sort(col, order)
 }
 
 // nullDisplayText is how SQL NULL is rendered in the grid (distinct from the string "NULL").
@@ -104,7 +117,9 @@ func (m *resultsTableModel) SetData(columns []string, rows [][]string, nulls [][
 	m.columns = append([]string(nil), columns...)
 	m.rows = rows
 	m.nulls = nulls
+	m.sorter = core.NewRowSorter(rows, nulls)
 	m.PublishRowsReset()
+	_ = m.SorterBase.Sort(0, walk.SortAscending) // new results arrive unsorted
 }
 
 type applicationUI struct {
@@ -926,7 +941,7 @@ func (u *applicationUI) rebuildResultsColumns() {
 		if isNumericColumn(u.resultsRows, u.resultsNulls, i) {
 			_ = col.SetAlignment(walk.AlignFar)
 		}
-		col.SetWidth(columnWidthPx(columnChars(name, u.resultsRows, i)))
+		col.SetWidth(columnWidthPx(columnChars(name, u.resultsRows, i)) + sortArrowPx)
 		_ = cols.Add(col)
 	}
 }
@@ -949,6 +964,9 @@ func columnChars(header string, rows [][]string, col int) int {
 	}
 	return n
 }
+
+// sortArrowPx is extra header room for the sort arrow so short names are not cut.
+const sortArrowPx = 16
 
 // columnWidthPx converts a character count to a capped pixel width.
 func columnWidthPx(chars int) int {
