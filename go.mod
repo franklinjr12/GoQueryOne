@@ -1,11 +1,11 @@
 module github.com/franklinjr12/GoQueryOne
 
-go 1.24
+go 1.24.0
 
 require (
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
-	golang.org/x/sys v0.30.0
+	golang.org/x/sys v0.37.0
 )
 
 require (

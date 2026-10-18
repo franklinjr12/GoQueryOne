@@ -36,10 +36,17 @@ type Session struct {
 	ConnectedInfo map[string]string
 }
 
+// Opener opens a database handle for a fully-built ODBC connection string.
+// Production code wires it to sql.Open("odbc", ...); tests inject an Opener
+// backed by a pure-Go driver (e.g. modernc.org/sqlite) so the engine can be
+// exercised without CGO or a system ODBC driver manager.
+type Opener func(connStr string) (*sql.DB, error)
+
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	activeID string
+	opener   Opener
 }
 
 type QueryOptions struct {

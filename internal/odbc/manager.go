@@ -13,9 +13,25 @@ import (
 
 const maxHistoryEntries = 50
 
+func defaultOpener(connStr string) (*sql.DB, error) {
+	return sql.Open("odbc", connStr)
+}
+
 func NewManager() *Manager {
+	return NewManagerWithOpener(defaultOpener)
+}
+
+// NewManagerWithOpener builds a Manager that opens connections through the
+// given Opener instead of the default "odbc" driver. Tests use this to wire
+// a pure-Go driver (e.g. modernc.org/sqlite) and exercise the execution
+// engine without CGO or a system ODBC driver manager.
+func NewManagerWithOpener(opener Opener) *Manager {
+	if opener == nil {
+		opener = defaultOpener
+	}
 	return &Manager{
 		sessions: map[string]*Session{},
+		opener:   opener,
 	}
 }
 
@@ -99,7 +115,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		return nil, err
 	}
 
-	db, err := sql.Open("odbc", dsn)
+	db, err := m.opener(dsn)
 	if err != nil {
 		m.setSessionError(session.ID, "connect", "", err)
 		_ = m.Disconnect(session.ID)
@@ -138,7 +154,7 @@ func (m *Manager) TestConnection(profile config.ConnectionProfile, password stri
 		return 0, err
 	}
 	start := time.Now()
-	db, err := sql.Open("odbc", dsn)
+	db, err := m.opener(dsn)
 	if err != nil {
 		return 0, err
 	}
