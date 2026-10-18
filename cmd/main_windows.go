@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
+	_ "github.com/franklinjr12/GoQueryOne/internal/odbcdriver"
 	"github.com/franklinjr12/GoQueryOne/internal/ui"
 )
 
@@ -32,6 +34,7 @@ func main() {
 	}
 	defer logFile.Close()
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	log.Printf("starting %s, config %s", buildinfo.String(), cfgPath)
 
 	if err := ui.RunWithConfig(cfgPath, cfg); err != nil {
 		log.Fatalf("Error starting UI: %v", err)

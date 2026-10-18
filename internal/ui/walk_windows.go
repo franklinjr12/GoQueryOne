@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/securestore"
@@ -200,7 +201,7 @@ func (u *applicationUI) build() error {
 	if !ok {
 		return errors.New("main window layout initialization failed")
 	}
-	_ = layout.SetMargins(walk.Margins{6, 6, 6, 6})
+	_ = layout.SetMargins(walk.Margins{HNear: 6, VNear: 6, HFar: 6, VFar: 6})
 	_ = layout.SetSpacing(6)
 
 	topBar, err := u.buildTopBar()
@@ -1537,7 +1538,7 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = dlg.SetMinMaxSize(walk.Size{Width: 980, Height: 460}, walk.Size{})
 
 	layout := walk.NewGridLayout()
-	_ = layout.SetMargins(walk.Margins{10, 10, 10, 10})
+	_ = layout.SetMargins(walk.Margins{HNear: 10, VNear: 10, HFar: 10, VFar: 10})
 	_ = layout.SetSpacing(8)
 	_ = layout.SetColumnStretchFactor(1, 1)
 	_ = layout.SetColumnStretchFactor(2, 1)
@@ -1860,8 +1861,11 @@ func (u *applicationUI) showConnectionWindow() {
 }
 func (u *applicationUI) showAbout() {
 	var report strings.Builder
-	report.WriteString("GoQueryOne\n")
-	report.WriteString("Architecture: " + runtime.GOARCH + "\n")
+	report.WriteString("GoQueryOne " + buildinfo.Version + "\n")
+	report.WriteString("Commit: " + buildinfo.Commit + "\n")
+	report.WriteString("Build date: " + buildinfo.Date + "\n")
+	report.WriteString("Architecture: " + buildinfo.Arch() + " (" + runtime.GOARCH + ")\n")
+	report.WriteString("License: MIT\n")
 	report.WriteString("Config path: " + u.configPath + "\n")
 	report.WriteString("Portable mode: " + strconv.FormatBool(strings.Contains(strings.ToLower(u.configPath), strings.ToLower(filepath.Dir(executablePath())))) + "\n")
 	if session, err := u.manager.ActiveSession(); err == nil {
@@ -1942,7 +1946,7 @@ func (u *applicationUI) promptParameters(count int, callback func([]any)) {
 	_ = dlg.SetBounds(walk.Rectangle{Width: 560, Height: 430})
 
 	layout := walk.NewVBoxLayout()
-	_ = layout.SetMargins(walk.Margins{8, 8, 8, 8})
+	_ = layout.SetMargins(walk.Margins{HNear: 8, VNear: 8, HFar: 8, VFar: 8})
 	_ = layout.SetSpacing(8)
 	if err := dlg.SetLayout(layout); err != nil {
 		showErrorBox(u.mainWindow, "Parameters", err)
@@ -2068,7 +2072,7 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 	_ = dlg.SetBounds(walk.Rectangle{Width: 420, Height: 160})
 
 	layout := walk.NewVBoxLayout()
-	_ = layout.SetMargins(walk.Margins{8, 8, 8, 8})
+	_ = layout.SetMargins(walk.Margins{HNear: 8, VNear: 8, HFar: 8, VFar: 8})
 	_ = layout.SetSpacing(8)
 	_ = dlg.SetLayout(layout)
 

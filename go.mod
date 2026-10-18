@@ -1,6 +1,6 @@
 module github.com/franklinjr12/GoQueryOne
 
-go 1.22.3
+go 1.24
 
 require (
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
