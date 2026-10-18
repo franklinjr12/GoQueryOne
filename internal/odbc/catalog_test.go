@@ -2,6 +2,7 @@ package odbc
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -218,5 +219,24 @@ func TestTableDetailsEmptyCatalogPKUsesFallback(t *testing.T) {
 		if strings.Contains(u, "SQLPrimaryKeys") {
 			t.Fatalf("unexpected unsupported note: %v", d2.Unsupported)
 		}
+	}
+}
+
+func TestLoadSchemaLargeSchemaSkipsPerTableColumns(t *testing.T) {
+	fc := sampleCatalog()
+	fc.wildcardErr = errors.New("HY090 invalid string length")
+	for i := 0; i <= MaxEagerColumnTables; i++ {
+		fc.tables = append(fc.tables, SchemaTable{Name: fmt.Sprintf("t%d", i), Type: "TABLE"})
+	}
+	m, s := catalogManager(t, fc, nil)
+	snap, err := m.LoadSchema(s.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.columnCalls) != 1 {
+		t.Fatalf("expected only the wildcard call, got %d calls", len(fc.columnCalls))
+	}
+	if len(snap.Tables) != len(fc.tables) {
+		t.Fatalf("tables = %d", len(snap.Tables))
 	}
 }

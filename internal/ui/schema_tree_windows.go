@@ -175,3 +175,34 @@ func (u *applicationUI) insertAtCaret(text string) {
 	_ = tab.Editor.SetFocus()
 	u.refreshState()
 }
+
+// addLazyColumns adds column nodes to a table that was listed without
+// columns (large schemas load columns on selection).
+func (u *applicationUI) addLazyColumns(table odbc.SchemaTable, cols []odbc.SchemaColumn) {
+	if len(cols) == 0 || len(u.schemaSnapshot.ColumnsOf(table)) > 0 || u.schemaTree == nil {
+		return
+	}
+	// Copy the map first: it may be shared with the session's schema cache,
+	// which background loads read.
+	copied := make(map[string][]odbc.SchemaColumn, len(u.schemaSnapshot.Columns)+1)
+	for k, v := range u.schemaSnapshot.Columns {
+		copied[k] = v
+	}
+	u.schemaSnapshot.Columns = copied
+	u.schemaSnapshot.SetColumns(table, cols)
+	model, ok := u.schemaTree.Model().(*schemaTreeModel)
+	if !ok {
+		return
+	}
+	it, ok := u.schemaTree.CurrentItem().(*schemaItem)
+	if !ok || it == nil || it.node.Kind != app.NodeTable || it.node.Table < 0 ||
+		it.node.Table >= len(u.schemaTables) || u.schemaTables[it.node.Table].Name != table.Name || len(it.children) > 0 {
+		return
+	}
+	for _, c := range cols {
+		n := &app.SchemaNode{Kind: app.NodeColumn, Label: app.ColumnLabel(c), Table: it.node.Table, Column: c.Name, Parent: it.node}
+		it.node.Children = append(it.node.Children, n)
+		it.children = append(it.children, &schemaItem{node: n, parent: it})
+	}
+	model.PublishItemsReset(it)
+}

@@ -46,6 +46,9 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 
 	columnsByTable := map[string][]SchemaColumn{}
 	for _, table := range tables {
+		if len(tables) > MaxEagerColumnTables {
+			break // large schema: columns are loaded per table on selection
+		}
 		cols, colErr := loadColumns(session, table)
 		if colErr != nil {
 			continue
@@ -72,6 +75,11 @@ func (s SchemaSnapshot) ColumnsOf(t SchemaTable) []SchemaColumn {
 }
 
 // SetColumns stores the columns of t in the snapshot.
+// MaxEagerColumnTables is the largest schema whose columns are loaded one
+// table at a time up front (when one catalog call for all columns is not
+// possible). Larger schemas get their columns on demand.
+const MaxEagerColumnTables = 300
+
 func (s *SchemaSnapshot) SetColumns(t SchemaTable, cols []SchemaColumn) {
 	if s.Columns == nil {
 		s.Columns = map[string][]SchemaColumn{}

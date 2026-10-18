@@ -134,7 +134,12 @@ func (m *Manager) catalogSchema(s *Session) (tables []SchemaTable, columns map[s
 			}
 			return nil
 		}
-		// Some drivers reject a wildcard table name: ask per table.
+		// Some drivers reject a wildcard table name: ask per table, unless
+		// the schema is so large that this would take minutes; columns are
+		// then loaded when a table is selected (TableDetails).
+		if len(tables) > MaxEagerColumnTables {
+			return nil
+		}
 		for _, t := range tables {
 			if cols, e := c.Columns(t); e == nil {
 				columns[detailsKey(t.Catalog, t.Schema, t.Name)] = cols

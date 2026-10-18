@@ -1414,6 +1414,7 @@ func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
 				_ = u.schemaDetails.SetText(detailsErr.Error())
 				return
 			}
+			u.addLazyColumns(table, details.Columns)
 			var b strings.Builder
 			b.WriteString("Columns:\n")
 			for _, c := range details.Columns {
