@@ -207,27 +207,15 @@ func RunWithConfig(cfgPath string, cfg *config.Config) error {
 }
 
 func (u *applicationUI) run() error {
-	width := int(u.cfg.App.Window.Width)
-	height := int(u.cfg.App.Window.Height)
-	if width <= 0 {
-		width = 1260
-	}
-	if height <= 0 {
-		height = 760
-	}
-
+	// Default size in DIPs (scaled by walk); the saved bounds are applied in
+	// pixels after creation by placeMainWindow.
 	mainWindow := declarative.MainWindow{
 		AssignTo: &u.mainWindow,
 		Title:    "GoQueryOne",
-		Bounds: declarative.Rectangle{
-			X:      int(u.cfg.App.Window.X),
-			Y:      int(u.cfg.App.Window.Y),
-			Width:  width,
-			Height: height,
-		},
-		MinSize: declarative.Size{Width: 1024, Height: 640},
-		Layout:  declarative.VBox{MarginsZero: true, Spacing: 6},
-		Visible: false,
+		Bounds:   declarative.Rectangle{Width: 1260, Height: 760},
+		MinSize:  declarative.Size{Width: 1024, Height: 640},
+		Layout:   declarative.VBox{MarginsZero: true, Spacing: 6},
+		Visible:  false,
 	}
 	if err := mainWindow.Create(); err != nil {
 		return err
@@ -244,7 +232,8 @@ func (u *applicationUI) run() error {
 	}
 	u.restoreProfiles()
 	u.refreshState()
-	u.mainWindow.Show()
+	u.placeMainWindow()
+	u.showMainWindow()
 	if tab := u.currentEditorTab(); tab != nil {
 		_ = tab.Editor.SetFocus()
 	}
@@ -299,11 +288,7 @@ func (u *applicationUI) build() error {
 			*canceled = true
 			return
 		}
-		b := u.mainWindow.BoundsPixels()
-		u.cfg.App.Window.Width = float32(b.Width)
-		u.cfg.App.Window.Height = float32(b.Height)
-		u.cfg.App.Window.X = float32(b.X)
-		u.cfg.App.Window.Y = float32(b.Y)
+		u.saveMainWindowPlacement()
 		_ = config.SaveConfig(u.cfg, u.configPath)
 		u.manager.DisconnectAll()
 	})

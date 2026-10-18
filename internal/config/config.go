@@ -31,6 +31,8 @@ type WindowConfig struct {
 	Height float32 `json:"height"`
 	X      float32 `json:"x"`
 	Y      float32 `json:"y"`
+	// Bounds above are physical pixels of the restored (non-maximized) window.
+	Maximized bool `json:"maximized,omitempty"`
 }
 
 type LoggingConfig struct {
