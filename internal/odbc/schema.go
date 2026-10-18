@@ -24,6 +24,15 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 		return filtered, nil
 	}
 
+	if tables, columnsByTable, ok := m.catalogSchema(session); ok {
+		snapshot := &SchemaSnapshot{Tables: tables, Columns: columnsByTable, GeneratedAt: time.Now()}
+		session.SchemaCache.PutSchema(snapshot)
+		if search == "" {
+			return *snapshot, nil
+		}
+		return filterSnapshot(*snapshot, search), nil
+	}
+
 	tables, err := loadTables(session)
 	if err != nil {
 		diag := BuildDiagnostic("schema.load", "", err)
@@ -127,28 +136,65 @@ func (m *Manager) TableDetails(sessionID, catalog, schema, table string) (TableD
 		Schema:  schema,
 		Table:   table,
 	}
-	cols, colErr := loadColumns(session, SchemaTable{Catalog: catalog, Schema: schema, Name: table})
+	ref := SchemaTable{Catalog: catalog, Schema: schema, Name: table}
+	// Each piece tries the native ODBC catalog first, then the SQL fallback.
+	var cols []SchemaColumn
+	colErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		cols, e = c.Columns(ref)
+		if e == nil && len(cols) == 0 {
+			e = errors.New("no columns")
+		}
+		return e
+	})
+	if colErr != nil {
+		cols, colErr = loadColumns(session, ref)
+	}
 	if colErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLColumns-compatible metadata for columns")
 	} else {
 		details.Columns = cols
 	}
 
-	pks, pkErr := loadPrimaryKeys(session, catalog, schema, table)
+	var pks []string
+	pkErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		pks, e = c.PrimaryKeys(ref)
+		return e
+	})
+	if pkErr != nil {
+		pks, pkErr = loadPrimaryKeys(session, catalog, schema, table)
+	}
 	if pkErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLPrimaryKeys-compatible metadata")
 	} else {
 		details.PrimaryKeys = pks
 	}
 
-	fks, fkErr := loadForeignKeys(session, catalog, schema, table)
+	var fks []ForeignKey
+	fkErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		fks, e = c.ForeignKeys(ref)
+		return e
+	})
+	if fkErr != nil {
+		fks, fkErr = loadForeignKeys(session, catalog, schema, table)
+	}
 	if fkErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLForeignKeys-compatible metadata")
 	} else {
 		details.ForeignKeys = fks
 	}
 
-	indexes, idxErr := loadIndexes(session, catalog, schema, table)
+	var indexes []IndexInfo
+	idxErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		indexes, e = c.Indexes(ref)
+		return e
+	})
+	if idxErr != nil {
+		indexes, idxErr = loadIndexes(session, catalog, schema, table)
+	}
 	if idxErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLStatistics-compatible metadata")
 	} else {

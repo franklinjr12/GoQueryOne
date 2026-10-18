@@ -134,6 +134,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 
 	m.mu.Lock()
 	session.DB = db
+	session.connStr = dsn
 	session.State = SessionConnected
 	session.ConnectedAt = time.Now()
 	session.ConnectedInfo = map[string]string{
@@ -191,6 +192,7 @@ func (m *Manager) Disconnect(sessionID string) error {
 	if session.Tx != nil {
 		_ = session.Tx.Rollback()
 	}
+	session.closeCatalog()
 	if session.DB != nil {
 		return session.DB.Close()
 	}

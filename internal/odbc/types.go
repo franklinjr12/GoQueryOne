@@ -38,6 +38,14 @@ type Session struct {
 	SchemaCache   *SchemaCache
 	ExecCancel    func()
 	ConnectedInfo map[string]string
+
+	// connStr is the full connection string (incl. password), kept in
+	// memory only so the ODBC catalog connection can be opened lazily.
+	connStr    string
+	catalogMu  sync.Mutex
+	catalog    Catalog
+	catalogErr error
+	dbInfo     *DBInfo
 }
 
 // Opener opens a database handle for a fully-built ODBC connection string.
@@ -51,6 +59,9 @@ type Manager struct {
 	sessions map[string]*Session
 	activeID string
 	opener   Opener
+	// catalogOpener opens a native ODBC catalog connection (SQLTables,
+	// SQLColumns, SQLGetInfo, …). nil means INFORMATION_SCHEMA/PRAGMA only.
+	catalogOpener CatalogOpener
 }
 
 type QueryOptions struct {
