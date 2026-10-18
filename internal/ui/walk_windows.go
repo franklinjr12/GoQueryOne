@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/franklinjr12/GoQueryOne/internal/app"
 	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/core"
@@ -48,20 +50,49 @@ func (m *resultsTableModel) RowCount() int {
 	return len(m.rows)
 }
 
+// Value returns the cell text. Column 0 is the 1-based row number; data
+// columns start at 1. SQL NULL is rendered as nullDisplayText.
 func (m *resultsTableModel) Value(row, col int) interface{} {
 	if row < 0 || row >= len(m.rows) {
 		return ""
 	}
-	if col < 0 || col >= len(m.columns) {
+	if len(m.columns) == 0 {
+		if col == 0 && len(m.rows[row]) > 0 {
+			return m.rows[row][0]
+		}
 		return ""
 	}
-	if col >= len(m.rows[row]) {
+	if col == 0 {
+		return strconv.Itoa(row + 1)
+	}
+	col--
+	if col < 0 || col >= len(m.columns) || col >= len(m.rows[row]) {
 		return ""
 	}
-	if row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col] {
+	if m.isNull(row, col) {
 		return nullDisplayText
 	}
 	return m.rows[row][col]
+}
+
+func (m *resultsTableModel) isNull(row, col int) bool {
+	return row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col]
+}
+
+// StyleCell greys out NULL cells and the row-number column.
+func (m *resultsTableModel) StyleCell(style *walk.CellStyle) {
+	if len(m.columns) == 0 {
+		return
+	}
+	row, col := style.Row(), style.Col()
+	if col == 0 {
+		style.TextColor = walk.RGB(120, 120, 120)
+		style.BackgroundColor = walk.RGB(243, 243, 243)
+		return
+	}
+	if m.isNull(row, col-1) {
+		style.TextColor = walk.RGB(150, 150, 150)
+	}
 }
 
 func (m *resultsTableModel) SetData(columns []string, rows [][]string, nulls [][]bool) {
@@ -82,7 +113,15 @@ type applicationUI struct {
 	sessionSelect    *walk.ComboBox
 	sessionOptions   []string
 	sessionOptionMap map[string]string
-	statusLabel      *walk.Label
+
+	actions        *uiActions
+	presenter      *app.Presenter
+	activityText   string
+	executing      bool
+	executingSince time.Time
+	lastTruncated  bool
+	resultsText    *walk.TextEdit
+	textView       bool
 
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
@@ -190,13 +229,17 @@ func (u *applicationUI) run() error {
 		return err
 	}
 
+	if icon, err := walk.NewIconFromResource("APP"); err == nil {
+		_ = u.mainWindow.SetIcon(icon)
+	}
+	if err := u.buildActions(); err != nil {
+		return err
+	}
 	if err := u.build(); err != nil {
 		return err
 	}
-	if err := u.registerShortcuts(); err != nil {
-		return err
-	}
 	u.restoreProfiles()
+	u.refreshState()
 	u.mainWindow.Show()
 	u.mainWindow.Run()
 	return nil
@@ -214,7 +257,7 @@ func (u *applicationUI) build() error {
 	if err != nil {
 		return err
 	}
-	_ = topBar.SetMinMaxSize(walk.Size{Height: 38}, walk.Size{Height: 38})
+	_ = topBar.SetMinMaxSize(walk.Size{Height: 26}, walk.Size{Height: 26})
 
 	mainSplit, err := walk.NewHSplitter(u.mainWindow)
 	if err != nil {
@@ -242,16 +285,13 @@ func (u *applicationUI) build() error {
 		return err
 	}
 
-	u.statusLabel, err = walk.NewLabel(u.mainWindow)
-	if err != nil {
-		return err
-	}
-	_ = u.statusLabel.SetText("Disconnected")
-	_ = u.statusLabel.SetMinMaxSize(walk.Size{Height: 22}, walk.Size{Height: 22})
-
 	_ = layout.SetStretchFactor(mainSplit, 1)
 
 	u.mainWindow.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if !u.confirmDiscardAll() {
+			*canceled = true
+			return
+		}
 		b := u.mainWindow.BoundsPixels()
 		u.cfg.App.Window.Width = float32(b.Width)
 		u.cfg.App.Window.Height = float32(b.Height)
@@ -262,18 +302,6 @@ func (u *applicationUI) build() error {
 	})
 
 	return nil
-}
-
-func (u *applicationUI) registerShortcuts() error {
-	runAction := walk.NewAction()
-	if err := runAction.SetText("Run"); err != nil {
-		return err
-	}
-	if err := runAction.SetShortcut(walk.Shortcut{Key: walk.KeyF5}); err != nil {
-		return err
-	}
-	runAction.Triggered().Attach(u.runStatement)
-	return u.mainWindow.ShortcutActions().Add(runAction)
 }
 
 func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
@@ -288,33 +316,11 @@ func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
 		return nil, err
 	}
 
-	connectButton, err := walk.NewPushButton(topBar)
+	sessionLabel, err := walk.NewLabel(topBar)
 	if err != nil {
 		return nil, err
 	}
-	_ = connectButton.SetText("Connect")
-	connectButton.Clicked().Attach(func() {
-		u.showConnectionWindow()
-	})
-
-	disconnectButton, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = disconnectButton.SetText("Disconnect")
-	disconnectButton.Clicked().Attach(func() {
-		active, activeErr := u.manager.ActiveSession()
-		if activeErr != nil {
-			showInfoBox(u.mainWindow, "Disconnect", "No active session.")
-			return
-		}
-		if err := u.manager.Disconnect(active.ID); err != nil {
-			showErrorBox(u.mainWindow, "Disconnect", err)
-			return
-		}
-		u.refreshSessionSelect()
-		u.updateStatus()
-	})
+	_ = sessionLabel.SetText("Active connection:")
 
 	u.sessionSelect, err = walk.NewDropDownBox(topBar)
 	if err != nil {
@@ -338,44 +344,7 @@ func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
 			showErrorBox(u.mainWindow, "Session", err)
 			return
 		}
-		u.updateStatus()
-	})
-
-	odbcAdmin64, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = odbcAdmin64.SetText("ODBC Admin x64")
-	odbcAdmin64.Clicked().Attach(func() {
-		path, openErr := odbc.OpenODBCAdmin("x64")
-		if openErr != nil {
-			showErrorBox(u.mainWindow, "ODBC Admin", fmt.Errorf("%w (path: %s)", openErr, path))
-			return
-		}
-		showInfoBox(u.mainWindow, "ODBC Admin", "Opened: "+path)
-	})
-
-	odbcAdmin32, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = odbcAdmin32.SetText("ODBC Admin x86")
-	odbcAdmin32.Clicked().Attach(func() {
-		path, openErr := odbc.OpenODBCAdmin("x86")
-		if openErr != nil {
-			showErrorBox(u.mainWindow, "ODBC Admin", fmt.Errorf("%w (path: %s)", openErr, path))
-			return
-		}
-		showInfoBox(u.mainWindow, "ODBC Admin", "Opened: "+path)
-	})
-
-	aboutButton, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = aboutButton.SetText("About")
-	aboutButton.Clicked().Attach(func() {
-		u.showAbout()
+		u.refreshState()
 	})
 
 	spacer, err := walk.NewComposite(topBar)
@@ -400,47 +369,11 @@ func (u *applicationUI) buildEditorPanel(parent walk.Container) (*walk.Composite
 		return nil, err
 	}
 
-	toolbar, err := walk.NewComposite(panel)
-	if err != nil {
-		return nil, err
-	}
-	toolbarLayout := walk.NewHBoxLayout()
-	_ = toolbarLayout.SetMargins(walk.Margins{})
-	_ = toolbarLayout.SetSpacing(6)
-	if err := toolbar.SetLayout(toolbarLayout); err != nil {
-		return nil, err
-	}
-
-	buttons := []struct {
-		label   string
-		handler func()
-	}{
-		{"New Tab", func() { u.addEditorTab("SQL", "") }},
-		{"Close Tab", u.closeCurrentTab},
-		{"Rename Tab", u.renameCurrentTab},
-		{"Open SQL", u.openSQLFile},
-		{"Save SQL", u.saveSQLFile},
-		{"Run", u.runStatement},
-		{"Run Script", u.runScript},
-		{"Cancel", u.cancelExecution},
-		{"Begin Tx", func() { u.transactionAction("begin") }},
-		{"Commit", func() { u.transactionAction("commit") }},
-		{"Rollback", func() { u.transactionAction("rollback") }},
-	}
-
-	for _, item := range buttons {
-		btn, newErr := walk.NewPushButton(toolbar)
-		if newErr != nil {
-			return nil, newErr
-		}
-		_ = btn.SetText(item.label)
-		btn.Clicked().Attach(item.handler)
-	}
-
 	u.editorTabs, err = walk.NewTabWidget(panel)
 	if err != nil {
 		return nil, err
 	}
+	u.editorTabs.CurrentIndexChanged().Attach(u.refreshState)
 	_ = panelLayout.SetStretchFactor(u.editorTabs, 1)
 
 	u.addEditorTab("SQL 1", "")
@@ -478,6 +411,11 @@ func (u *applicationUI) addEditorTab(baseTitle, content string) {
 	}
 	_ = editor.SetText(content)
 	_ = layout.SetStretchFactor(editor, 1)
+	if font, fontErr := walk.NewFont("Consolas", 10, 0); fontErr == nil {
+		editor.SetFont(font)
+	}
+	editor.KeyUp().Attach(func(walk.Key) { u.refreshState() })
+	editor.MouseUp().Attach(func(int, int, walk.MouseButton) { u.refreshState() })
 
 	tab := &sqlEditorTab{Page: page, Editor: editor, Title: title}
 	u.editorTabIndex[page] = tab
@@ -506,6 +444,7 @@ func (u *applicationUI) refreshTabTitle(tab *sqlEditorTab) {
 		title += " *"
 	}
 	_ = tab.Page.SetTitle(title)
+	u.refreshState()
 }
 
 func (u *applicationUI) currentEditorTab() *sqlEditorTab {
@@ -531,6 +470,9 @@ func (u *applicationUI) closeCurrentTab() {
 	page := pages.At(idx)
 	tab := u.editorTabIndex[page]
 	if tab == nil {
+		return
+	}
+	if !u.confirmDiscard(tab) {
 		return
 	}
 
@@ -605,41 +547,6 @@ func (u *applicationUI) openSQLFile() {
 	}
 }
 
-func (u *applicationUI) saveSQLFile() {
-	tab := u.currentEditorTab()
-	if tab == nil {
-		return
-	}
-
-	dlg := walk.FileDialog{
-		Title:       "Save SQL",
-		FilePath:    tab.FilePath,
-		Filter:      "SQL Files (*.sql;*.txt)|*.sql;*.txt|All Files (*.*)|*.*",
-		FilterIndex: 1,
-	}
-	if strings.TrimSpace(dlg.FilePath) == "" {
-		dlg.FilePath = "query.sql"
-	}
-
-	accepted, err := dlg.ShowSave(u.mainWindow)
-	if err != nil {
-		showErrorBox(u.mainWindow, "Save SQL", err)
-		return
-	}
-	if !accepted {
-		return
-	}
-
-	if err := os.WriteFile(dlg.FilePath, []byte(tab.Editor.Text()), 0o644); err != nil {
-		showErrorBox(u.mainWindow, "Save SQL", err)
-		return
-	}
-
-	tab.FilePath = dlg.FilePath
-	tab.Title = filepath.Base(dlg.FilePath)
-	tab.Dirty = false
-	u.refreshTabTitle(tab)
-}
 func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite, error) {
 	panel, err := walk.NewComposite(parent)
 	if err != nil {
@@ -832,84 +739,24 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 		return nil, err
 	}
 
-	toolbar, err := walk.NewComposite(resultsPage)
+	loadMoreBar, err := walk.NewComposite(resultsPage)
 	if err != nil {
 		return nil, err
 	}
-	toolbarLayout := walk.NewHBoxLayout()
-	_ = toolbarLayout.SetMargins(walk.Margins{})
-	_ = toolbarLayout.SetSpacing(6)
-	if err := toolbar.SetLayout(toolbarLayout); err != nil {
+	loadMoreLayout := walk.NewHBoxLayout()
+	_ = loadMoreLayout.SetMargins(walk.Margins{})
+	if err := loadMoreBar.SetLayout(loadMoreLayout); err != nil {
 		return nil, err
 	}
-
-	copySelectedBtn, err := walk.NewPushButton(toolbar)
+	u.loadMoreButton, err = walk.NewPushButton(loadMoreBar)
 	if err != nil {
 		return nil, err
 	}
-	_ = copySelectedBtn.SetText("Copy Selection")
-	copySelectedBtn.Clicked().Attach(func() {
-		u.copySelectedCell()
-	})
-
-	copyAllBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyAllBtn.SetText("Copy All TSV")
-	copyAllBtn.Clicked().Attach(func() {
-		u.copyAllRows("\t")
-	})
-
-	copyCSVBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyCSVBtn.SetText("Copy All CSV")
-	copyCSVBtn.Clicked().Attach(func() {
-		u.copyAllRows(",")
-	})
-
-	exportBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = exportBtn.SetText("Export")
-	exportBtn.Clicked().Attach(func() {
-		u.exportResults()
-	})
-
-	toggleOutputBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = toggleOutputBtn.SetText("Toggle Text")
-	toggleOutputBtn.Clicked().Attach(func() {
-		u.outputEnabled = !u.outputEnabled
-		if u.outputEnabled {
-			u.appendMessage("Text output enabled.")
-		} else {
-			u.appendMessage("Text output disabled.")
-		}
-	})
-
-	copyErrorBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyErrorBtn.SetText("Copy Error")
-	copyErrorBtn.Clicked().Attach(func() {
-		_ = walk.Clipboard().SetText(u.errorsEntry.Text())
-	})
-
-	u.loadMoreButton, err = walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = u.loadMoreButton.SetText("Load More")
+	_ = u.loadMoreButton.SetText("Result truncated - Load more rows")
 	u.loadMoreButton.Clicked().Attach(func() {
 		u.loadMoreRows()
 	})
+	_, _ = walk.NewHSpacer(loadMoreBar)
 	u.loadMoreButton.SetVisible(false)
 
 	u.resultsTable, err = walk.NewTableView(resultsPage)
@@ -919,13 +766,36 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 	if err := u.resultsTable.SetModel(u.resultsModel); err != nil {
 		return nil, err
 	}
-	_ = u.resultsTable.SetLastColumnStretched(true)
-	_ = u.resultsTable.SetMultiSelection(false)
+	_ = u.resultsTable.SetLastColumnStretched(false)
+	_ = u.resultsTable.SetMultiSelection(true)
+	u.resultsTable.SetAlternatingRowBG(true)
+	u.resultsTable.SetCellStyler(u.resultsModel)
 	u.resultsTable.CurrentIndexChanged().Attach(func() {
 		u.selectedRow = u.resultsTable.CurrentIndex()
 		u.selectedCol = 0
 	})
+	u.resultsTable.SelectedIndexesChanged().Attach(u.refreshState)
+	u.resultsTable.KeyDown().Attach(func(key walk.Key) {
+		if key == walk.KeyC && walk.ModifiersDown() == walk.ModControl {
+			u.copySelectedRows(false)
+		}
+		if key == walk.KeyA && walk.ModifiersDown() == walk.ModControl {
+			_ = u.resultsTable.SetSelectedIndexes(allIndexes(len(u.resultsRows)))
+		}
+	})
 	_ = resultsLayout.SetStretchFactor(u.resultsTable, 1)
+
+	u.resultsText, err = walk.NewTextEdit(resultsPage)
+	if err != nil {
+		return nil, err
+	}
+	_ = u.resultsText.SetReadOnly(true)
+	if font, fontErr := walk.NewFont("Consolas", 9, 0); fontErr == nil {
+		u.resultsText.SetFont(font)
+	}
+	u.resultsText.SetVisible(false)
+	_ = resultsLayout.SetStretchFactor(u.resultsText, 1)
+	u.preventSelectAllOnFocus(u.resultsText)
 
 	u.rebuildResultsColumns()
 
@@ -985,6 +855,7 @@ func (u *applicationUI) newReadOnlyTextPage(page *walk.TabPage) (*walk.TextEdit,
 	}
 	_ = entry.SetReadOnly(true)
 	_ = layout.SetStretchFactor(entry, 1)
+	u.preventSelectAllOnFocus(entry)
 	return entry, nil
 }
 
@@ -1001,12 +872,208 @@ func (u *applicationUI) rebuildResultsColumns() {
 		_ = cols.Add(col)
 		return
 	}
-	for _, name := range u.resultsColumns {
+	numCol := walk.NewTableViewColumn()
+	_ = numCol.SetTitle("#")
+	_ = numCol.SetAlignment(walk.AlignFar)
+	numCol.SetWidth(columnWidthPx(len(strconv.Itoa(len(u.resultsRows))) + 1))
+	_ = cols.Add(numCol)
+	for i, name := range u.resultsColumns {
 		col := walk.NewTableViewColumn()
 		_ = col.SetTitle(name)
-		col.SetWidth(140)
+		if isNumericColumn(u.resultsRows, u.resultsNulls, i) {
+			_ = col.SetAlignment(walk.AlignFar)
+		}
+		col.SetWidth(columnWidthPx(columnChars(name, u.resultsRows, i)))
 		_ = cols.Add(col)
 	}
+}
+
+const autoWidthSampleRows = 200
+
+// columnChars returns the widest display length (runes) of the header and
+// the first autoWidthSampleRows values of column col.
+func columnChars(header string, rows [][]string, col int) int {
+	n := utf8.RuneCountInString(header)
+	if n < len(nullDisplayText) {
+		n = len(nullDisplayText)
+	}
+	for r := 0; r < len(rows) && r < autoWidthSampleRows; r++ {
+		if col < len(rows[r]) {
+			if l := utf8.RuneCountInString(rows[r][col]); l > n {
+				n = l
+			}
+		}
+	}
+	return n
+}
+
+// columnWidthPx converts a character count to a capped pixel width.
+func columnWidthPx(chars int) int {
+	w := chars*7 + 18
+	if w < 40 {
+		w = 40
+	}
+	if w > 400 {
+		w = 400
+	}
+	return w
+}
+
+// isNumericColumn reports whether every non-NULL sampled value parses as a number.
+func isNumericColumn(rows [][]string, nulls [][]bool, col int) bool {
+	seen := false
+	for r := 0; r < len(rows) && r < autoWidthSampleRows; r++ {
+		if col >= len(rows[r]) {
+			continue
+		}
+		if r < len(nulls) && col < len(nulls[r]) && nulls[r][col] {
+			continue
+		}
+		v := strings.TrimSpace(rows[r][col])
+		if v == "" {
+			return false
+		}
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+func allIndexes(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+// preventSelectAllOnFocus stops read-only boxes from highlighting their
+// whole content when they receive focus.
+func (u *applicationUI) preventSelectAllOnFocus(te *walk.TextEdit) {
+	te.FocusedChanged().Attach(func() {
+		if te.Focused() {
+			start, end := te.TextSelection()
+			if end-start == te.TextLength() && end > 0 {
+				te.SetTextSelection(end, end)
+			}
+		}
+	})
+}
+
+// copySelectedRows copies the selected grid rows as Excel-ready TSV.
+func (u *applicationUI) copySelectedRows(withHeaders bool) {
+	if len(u.resultsColumns) == 0 || u.resultsTable == nil {
+		return
+	}
+	idx := u.resultsTable.SelectedIndexes()
+	if len(idx) == 0 {
+		if cur := u.resultsTable.CurrentIndex(); cur >= 0 {
+			idx = []int{cur}
+		} else {
+			return
+		}
+	}
+	_ = walk.Clipboard().SetText(export.TSVString(export.SelectRows(u.currentTable(), idx), withHeaders))
+	u.setActivity(fmt.Sprintf("Copied %d row(s)", len(idx)))
+	u.activityText = ""
+}
+
+// toggleTextView switches the Results tab between the grid and an aligned
+// plain-text rendering (F9, like ODBC Query Tool).
+func (u *applicationUI) toggleTextView() {
+	u.textView = !u.textView
+	u.renderResultView()
+	if u.outputTabs != nil {
+		_ = u.outputTabs.SetCurrentIndex(0)
+	}
+}
+
+func (u *applicationUI) renderResultView() {
+	if u.resultsTable == nil || u.resultsText == nil {
+		return
+	}
+	if u.textView {
+		_ = u.resultsText.SetText(strings.ReplaceAll(export.TextString(u.currentTable(), export.TextOptions{}), "\n", "\r\n"))
+	}
+	u.resultsText.SetVisible(u.textView)
+	u.resultsTable.SetVisible(!u.textView)
+}
+
+// saveTab writes the tab to its file; asks for a path when it has none or
+// when asNew (Save As). Returns false if the user canceled or saving failed.
+func (u *applicationUI) saveTab(tab *sqlEditorTab, asNew bool) bool {
+	if tab == nil {
+		return false
+	}
+	path := tab.FilePath
+	if asNew || strings.TrimSpace(path) == "" {
+		dlg := walk.FileDialog{
+			Title:       "Save SQL",
+			FilePath:    tab.FilePath,
+			Filter:      "SQL Files (*.sql;*.txt)|*.sql;*.txt|All Files (*.*)|*.*",
+			FilterIndex: 1,
+		}
+		if strings.TrimSpace(dlg.FilePath) == "" {
+			dlg.FilePath = strings.TrimSuffix(tab.Title, " *") + ".sql"
+		}
+		accepted, err := dlg.ShowSave(u.mainWindow)
+		if err != nil {
+			showErrorBox(u.mainWindow, "Save SQL", err)
+			return false
+		}
+		if !accepted {
+			return false
+		}
+		path = dlg.FilePath
+		if filepath.Ext(path) == "" {
+			path += ".sql"
+		}
+	}
+	if err := os.WriteFile(path, []byte(tab.Editor.Text()), 0o644); err != nil {
+		showErrorBox(u.mainWindow, "Save SQL", err)
+		return false
+	}
+	tab.FilePath = path
+	tab.Title = filepath.Base(path)
+	tab.Dirty = false
+	u.refreshTabTitle(tab)
+	return true
+}
+
+// confirmDiscard asks Save / Don't save / Cancel for a dirty tab. Returns
+// true when it is OK to close the tab.
+func (u *applicationUI) confirmDiscard(tab *sqlEditorTab) bool {
+	if tab == nil || !tab.Dirty {
+		return true
+	}
+	if u.editorTabs != nil && tab.Page != nil {
+		if idx := u.editorTabs.Pages().Index(tab.Page); idx >= 0 {
+			_ = u.editorTabs.SetCurrentIndex(idx)
+		}
+	}
+	switch walk.MsgBox(u.mainWindow, "Unsaved changes", "Save changes to \""+tab.Title+"\"?", walk.MsgBoxYesNoCancel|walk.MsgBoxIconQuestion) {
+	case walk.DlgCmdYes:
+		return u.saveTab(tab, false)
+	case walk.DlgCmdNo:
+		return true
+	default:
+		return false
+	}
+}
+
+func (u *applicationUI) confirmDiscardAll() bool {
+	if u.editorTabs == nil {
+		return true
+	}
+	pages := u.editorTabs.Pages()
+	for i := 0; i < pages.Len(); i++ {
+		if !u.confirmDiscard(u.editorTabIndex[pages.At(i)]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (u *applicationUI) transactionAction(action string) {
@@ -1061,7 +1128,7 @@ func (u *applicationUI) runStatement() {
 
 	paramCount := odbc.CountPositionalParams(sqlText)
 	run := func(params []any) {
-		_ = u.statusLabel.SetText("Executing...")
+		u.beginExecuting("Executing…")
 		u.lastQuerySQL = sqlText
 		u.lastQueryArgs = params
 		u.lastMaxRows = u.cfg.Query.DefaultMaxRows
@@ -1112,7 +1179,7 @@ func (u *applicationUI) runScript() {
 		return
 	}
 
-	_ = u.statusLabel.SetText("Executing script...")
+	u.beginExecuting("Executing script…")
 	go func() {
 		res, runErr := u.manager.ExecuteScript(session.ID, sqlText, odbc.ScriptOptions{
 			Timeout:   time.Duration(u.cfg.Query.DefaultTimeoutMs) * time.Millisecond,
@@ -1175,7 +1242,9 @@ func (u *applicationUI) cancelExecution() {
 func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
 	if res.ErrorMessage != "" {
 		// Failures are reported in the Errors tab; never print a fake "completed" line.
-		u.appendMessage(fmt.Sprintf("%s  Error after %s: %s", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime), odbc.MaskSecrets(res.ErrorMessage)))
+		o := outcomeOf(res)
+		o.Err = odbc.MaskSecrets(o.Err)
+		u.appendMessage(app.MessageFor(*o))
 		return
 	}
 	if res.HasRows {
@@ -1187,13 +1256,9 @@ func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
 		u.resultsNulls = res.ResultSet.Nulls
 		u.rebuildResultsColumns()
 		u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
-		if res.ResultSet.Truncated {
-			u.loadMoreButton.SetVisible(true)
-			u.appendMessage(fmt.Sprintf("Result truncated at %d rows.", res.ResultSet.TruncatedAt))
-		} else {
-			u.loadMoreButton.SetVisible(false)
-		}
-		u.appendMessage(fmt.Sprintf("%s  %d rows, %d columns retrieved in %s", time.Now().Format("15:04:05"), res.ResultSet.RowCount, len(res.ResultSet.Columns), core.FormatDuration(res.ExecutionTime)))
+		u.lastTruncated = res.ResultSet.Truncated
+		u.renderResultView()
+		u.appendMessage(app.MessageFor(*outcomeOf(res)))
 		if u.outputEnabled {
 			u.appendMessage(export.TextString(u.currentTable(), export.TextOptions{}))
 		}
@@ -1203,14 +1268,11 @@ func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
 	u.resultsColumns = []string{}
 	u.resultsRows = [][]string{}
 	u.resultsNulls = nil
+	u.lastTruncated = false
 	u.rebuildResultsColumns()
 	u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
-	u.loadMoreButton.SetVisible(false)
-	if res.RowsAffected >= 0 {
-		u.appendMessage(fmt.Sprintf("%s  Command executed in %s. Rows affected: %d", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime), res.RowsAffected))
-	} else {
-		u.appendMessage(fmt.Sprintf("%s  Command executed in %s.", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime)))
-	}
+	u.renderResultView()
+	u.appendMessage(app.MessageFor(*outcomeOf(res)))
 }
 
 func (u *applicationUI) showDiagnostic(err error, res odbc.StatementResult) {
@@ -1269,7 +1331,7 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 		return
 	}
 
-	_ = u.statusLabel.SetText("Loading schema...")
+	u.setActivity("Loading schema…")
 	search := strings.TrimSpace(u.schemaSearchEntry.Text())
 
 	go func() {
@@ -1438,7 +1500,7 @@ func (u *applicationUI) loadMoreRows() {
 
 	u.lastMaxRows += u.cfg.Query.FetchPageSize
 	u.appendMessage("Query re-executed to load more rows (max " + strconv.Itoa(u.lastMaxRows) + ").")
-	_ = u.statusLabel.SetText("Loading more...")
+	u.beginExecuting("Loading more rows…")
 
 	go func() {
 		res, runErr := u.manager.ExecuteStatement(session.ID, u.lastQuerySQL, u.lastQueryArgs, odbc.QueryOptions{
@@ -1650,9 +1712,6 @@ func (u *applicationUI) showConnectionWindow() {
 		profileMap[label] = p
 	}
 	_ = profileSelect.SetModel(profileOptions)
-	if len(profileOptions) > 0 {
-		_ = profileSelect.SetCurrentIndex(0)
-	}
 
 	selectedProfileID := ""
 
@@ -1668,7 +1727,7 @@ func (u *applicationUI) showConnectionWindow() {
 		connEntry.SetVisible(mode == "Connection string")
 	}
 
-	profileSelect.CurrentIndexChanged().Attach(func() {
+	fillFromProfile := func() {
 		label := comboSelected(profileSelect, profileOptions)
 		p, ok := profileMap[label]
 		if !ok {
@@ -1695,9 +1754,17 @@ func (u *applicationUI) showConnectionWindow() {
 			_ = modeSelect.SetCurrentIndex(indexOf(modeOptions, "DSN"))
 		}
 		applyModeVisibility()
-	})
+	}
+	profileSelect.CurrentIndexChanged().Attach(fillFromProfile)
 
 	modeSelect.CurrentIndexChanged().Attach(applyModeVisibility)
+	// Preselect the first saved profile after the handler is attached so its
+	// fields are actually filled in (previously the dialog opened with the
+	// profile selected but empty fields).
+	if len(profileOptions) > 0 {
+		_ = profileSelect.SetCurrentIndex(0)
+		fillFromProfile()
+	}
 
 	buildProfile := func() (config.ConnectionProfile, string, error) {
 		name := strings.TrimSpace(nameEntry.Text())
@@ -1929,34 +1996,19 @@ func (u *applicationUI) refreshSessionSelect() {
 	}
 }
 
+// updateStatus ends any transient activity/execution and re-renders the
+// presenter state (status bar sections, enablement, title).
 func (u *applicationUI) updateStatus() {
-	session, err := u.manager.ActiveSession()
-	if err != nil {
-		_ = u.statusLabel.SetText("Disconnected")
-		return
-	}
+	u.executing = false
+	u.activityText = ""
+	u.refreshState()
+}
 
-	msg := fmt.Sprintf("Active: %s | State: %s", session.Name, session.State)
-	if session.Tx != nil {
-		msg += " | Transaction: ON"
-	}
-	if session.LastResult != nil {
-		r := session.LastResult
-		switch {
-		case session.LastOutcome != "" && session.LastOutcome != "ok":
-			msg += " | Last statement: " + session.LastOutcome + " after " + core.FormatDuration(r.ExecutionTime)
-		case r.HasRows:
-			msg += fmt.Sprintf(" | %d rows in %s", r.ResultSet.RowCount, core.FormatDuration(r.ExecutionTime))
-			if r.ResultSet.Truncated {
-				msg += fmt.Sprintf(" (truncated at %d)", r.ResultSet.TruncatedAt)
-			}
-		case r.RowsAffected >= 0:
-			msg += fmt.Sprintf(" | %d rows affected in %s", r.RowsAffected, core.FormatDuration(r.ExecutionTime))
-		default:
-			msg += " | Command executed in " + core.FormatDuration(r.ExecutionTime)
-		}
-	}
-	_ = u.statusLabel.SetText(msg)
+func (u *applicationUI) beginExecuting(activity string) {
+	u.executing = true
+	u.executingSince = time.Now()
+	u.activityText = activity
+	u.refreshState()
 }
 
 func (u *applicationUI) restoreProfiles() {

@@ -34,4 +34,6 @@ go.work.sum
 # AI generated files
 *current-planning.md
 
-logs.txtdist/
+logs.txt
+dist/
+artifacts/
