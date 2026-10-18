@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Edit > Find (Ctrl+F) and Find next (F3) in the SQL editor.
+
 ### Fixed
+- Rename tab (and other one-line prompts) ignored the typed text.
 - Each statement is executed **exactly once**. Previously a statement that
   failed on the query path was retried as a command, so an `INSERT` could run
   twice.

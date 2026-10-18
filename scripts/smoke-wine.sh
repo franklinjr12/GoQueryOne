@@ -132,6 +132,12 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   xdotool key alt+t; sleep 0.5; xdotool key Up Return        # Tools > Settings… (last item)
   shot 11-settings 2
   xdotool key Escape
+  sleep 0.5
+  focus_editor; xdotool key ctrl+Home; sleep 0.3; xdotool key ctrl+f   # Edit > Find…
+  FD=$(timeout 10 bash -c "until xdotool search --name '^Find$' >/dev/null 2>&1; do sleep 0.5; done; xdotool search --name '^Find$' | head -1")
+  if [ -n "$FD" ]; then xdotool windowfocus "$FD"; sleep 0.5; fi
+  xdotool type --delay 30 "orders"; sleep 0.3; xdotool key Return
+  shot 12-find 2
   set -e
 fi
 

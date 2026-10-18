@@ -47,6 +47,7 @@ The active connection is shown in the toolbar box and in the status bar.
 | F6 | Run the whole script (statements separated by `;`) |
 | Esc | Cancel the running statement |
 | F8 | Refresh the schema |
+| Ctrl+F / F3 | Find text in the editor (case-insensitive) / find the next match, wrapping at the end |
 | F9 | Toggle the results between grid and text view |
 | F1 | Open this guide |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+W | New tab / open file / save / close tab |

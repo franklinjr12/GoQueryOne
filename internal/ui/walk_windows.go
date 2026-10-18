@@ -133,7 +133,8 @@ type applicationUI struct {
 	splitters      []*walk.Splitter
 	historyStore   *history.Store
 	historyWriter  *history.Writer
-	detailsGen     int // latest table-details request (stale results are dropped)
+	lastFind       string // Edit > Find text
+	detailsGen     int    // latest table-details request (stale results are dropped)
 	// preselectProfileID makes the next connection dialog open on this profile.
 	preselectProfileID string
 
@@ -2380,6 +2381,11 @@ func (u *applicationUI) promptParameters(count int, callback func([]any)) {
 }
 
 func (u *applicationUI) promptLine(title, label, initial string) (string, bool) {
+	return u.promptLineOK(title, label, initial, "Save")
+}
+
+// promptLineOK asks for one line of text; okText labels the OK button.
+func (u *applicationUI) promptLineOK(title, label, initial, okText string) (string, bool) {
 	dlg, err := walk.NewDialog(u.mainWindow)
 	if err != nil {
 		showErrorBox(u.mainWindow, title, err)
@@ -2406,12 +2412,16 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 	_ = buttons.SetLayout(rowLayout)
 
 	okBtn, _ := walk.NewPushButton(buttons)
-	_ = okBtn.SetText("Save")
+	_ = okBtn.SetText(okText)
 
 	cancelBtn, _ := walk.NewPushButton(buttons)
 	_ = cancelBtn.SetText("Cancel")
 
+	// Read the text before the dialog closes: afterwards the edit control is
+	// destroyed and Text() returns "" (this made Rename tab a no-op).
+	var value string
 	okBtn.Clicked().Attach(func() {
+		value = entry.Text()
 		dlg.Accept()
 	})
 	cancelBtn.Clicked().Attach(func() {
@@ -2420,9 +2430,14 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 
 	_ = dlg.SetDefaultButton(okBtn)
 	_ = dlg.SetCancelButton(cancelBtn)
+	// Type right away: focus the text box with its content selected.
+	dlg.Starting().Attach(func() {
+		_ = entry.SetFocus()
+		entry.SetTextSelection(0, -1)
+	})
 
 	if dlg.Run() == walk.DlgCmdOK {
-		return entry.Text(), true
+		return value, true
 	}
 	return "", false
 }

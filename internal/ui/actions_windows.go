@@ -32,6 +32,7 @@ type uiActions struct {
 	newTab, open, save, saveAs, closeTab, renameTab *walk.Action
 	exit                                            *walk.Action
 	copyRows, copyAll, copyCSV, copyHeaders         *walk.Action
+	find, findNext                                  *walk.Action
 	run, runCtrlEnter, runScript, cancel, loadMore  *walk.Action
 	begin, commit, rollback                         *walk.Action
 	refreshSchema, toggleText                       *walk.Action
@@ -132,6 +133,9 @@ func (u *applicationUI) buildActions() error {
 	a.copyAll = u.newAction("Copy all (TSV, Excel)", "", walk.Shortcut{}, func() { u.copyAllRows("\t") })
 	a.copyCSV = u.newAction("Copy all (CSV)", "", walk.Shortcut{}, func() { u.copyAllRows(",") })
 
+	a.find = u.newAction("Find…", "", ctrl(walk.KeyF), u.findInEditor)
+	a.findNext = u.newAction("Find next", "", key(walk.KeyF3), u.findNext)
+
 	a.run = u.newAction("Run statement", "run", key(walk.KeyF5), u.runStatement)
 	a.runCtrlEnter = u.newAction("Run statement", "", ctrl(walk.KeyReturn), u.runStatement)
 	a.runScript = u.newAction("Run script", "runscript", key(walk.KeyF6), u.runScript)
@@ -168,7 +172,7 @@ func (u *applicationUI) buildActions() error {
 		actions []*walk.Action
 	}{
 		{"&File", []*walk.Action{a.newTab, a.open, a.save, a.saveAs, nil, a.renameTab, a.closeTab, nil, a.exit}},
-		{"&Edit", []*walk.Action{a.copyRows, a.copyHeaders, a.copyAll, a.copyCSV}},
+		{"&Edit", []*walk.Action{a.find, a.findNext, nil, a.copyRows, a.copyHeaders, a.copyAll, a.copyCSV}},
 		{"&Query", []*walk.Action{a.run, a.runScript, a.cancel, a.loadMore, nil, a.begin, a.commit, a.rollback}},
 		{"&View", []*walk.Action{a.refreshSchema, a.toggleText}},
 		{"&Tools", []*walk.Action{a.connect, a.connectTo, a.disconnect, nil, a.odbcAdminNative, a.odbcAdmin64, a.odbcAdmin32, nil, a.export, nil, a.settings}},
