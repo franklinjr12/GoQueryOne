@@ -190,7 +190,7 @@ func RunWithConfig(cfgPath string, cfg *config.Config) error {
 	ui := &applicationUI{
 		configPath:       cfgPath,
 		cfg:              cfg,
-		manager:          odbc.NewManager(),
+		manager:          newManager(),
 		secrets:          secrets,
 		sessionOptionMap: map[string]string{},
 		editorTabIndex:   map[*walk.TabPage]*sqlEditorTab{},
@@ -1316,6 +1316,7 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 		} else {
 			snapshot, loadErr = u.manager.LoadSchema(session.ID, search)
 		}
+		_, _ = u.manager.DBInfo(session.ID) // SQLGetInfo: DBMS/driver for About and the limit syntax
 		u.runOnMain(func() {
 			if loadErr != nil {
 				showErrorBox(u.mainWindow, "Schema", loadErr)
@@ -1444,16 +1445,13 @@ func (u *applicationUI) limitSyntax() string {
 	if s := core.NormalizeLimitSyntax(p.Options.LimitSyntax); s != "" && s != core.LimitTop {
 		return s
 	}
-	hints := []string{p.Driver, p.ConnectionString}
+	var hints []string
+	if info, infoErr := u.manager.DBInfo(session.ID); infoErr == nil {
+		hints = append(hints, info.DBMSName, info.DriverName) // SQLGetInfo: the most reliable hint
+	}
+	hints = append(hints, p.Driver, p.ConnectionString)
 	if p.DSN != "" {
-		if dsns, dsnErr := odbc.ListDSNs(); dsnErr == nil {
-			for _, d := range dsns {
-				if strings.EqualFold(d.Name, p.DSN) {
-					hints = append(hints, d.Driver)
-					break
-				}
-			}
-		}
+		hints = append(hints, dsnDriver(p.DSN))
 		hints = append(hints, p.DSN)
 	}
 	return core.DetectLimitSyntax(hints...)
@@ -1621,14 +1619,18 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = dsnLabel.SetText("DSN")
 	_ = layout.SetRange(dsnLabel, walk.Rectangle{X: 0, Y: 2, Width: 1, Height: 1})
 
-	dsnEntry, _ := walk.NewLineEdit(dlg)
+	// Editable combo boxes: pick a DSN / driver installed for this exe's
+	// bitness (SQLDataSources / SQLDrivers) or type one.
+	dsnEntry, _ := walk.NewComboBox(dlg)
+	_ = dsnEntry.SetModel(dsnNames())
 	_ = layout.SetRange(dsnEntry, walk.Rectangle{X: 1, Y: 2, Width: 3, Height: 1})
 
 	driverLabel, _ := walk.NewLabel(dlg)
 	_ = driverLabel.SetText("Driver")
 	_ = layout.SetRange(driverLabel, walk.Rectangle{X: 0, Y: 3, Width: 1, Height: 1})
 
-	driverEntry, _ := walk.NewLineEdit(dlg)
+	driverEntry, _ := walk.NewComboBox(dlg)
+	_ = driverEntry.SetModel(driverNames())
 	_ = layout.SetRange(driverEntry, walk.Rectangle{X: 1, Y: 3, Width: 3, Height: 1})
 
 	fileLabel, _ := walk.NewLabel(dlg)
