@@ -21,8 +21,17 @@ F5.
 - Messages, Errors and History tabs; rows affected and human-friendly
   durations in the status bar.
 - Export to CSV, TSV, JSON, Markdown or plain text.
-- Manual transactions (Begin / Commit / Rollback), load more rows, schema
-  browser, ODBC Administrator shortcuts for x64 and x86.
+- Manual transactions (Begin / Commit / Rollback), load more rows and ODBC
+  Administrator shortcuts for x64 and x86.
+- Schema browser tree (tables, views, columns, keys and indexes) read through
+  the ODBC catalog API; double-click for a `SELECT TOP` (or `LIMIT` / `FETCH
+  FIRST`, matching the database) or to insert a column name.
+- DSN and driver pickers that list what is installed for the exe's bitness,
+  connection-string templates, New / Duplicate / Delete profiles and
+  one-step **Tools > Connect to**.
+- Settings dialog (timeout, row limits, editor font size, system tables,
+  opt-in query history with passwords masked). Window, splitters and open SQL
+  files are restored at the next start.
 
 ## System requirements
 
