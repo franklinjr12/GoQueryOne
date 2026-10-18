@@ -627,6 +627,10 @@ func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite
 	}
 	_ = topLayout.SetStretchFactor(u.schemaList, 1)
 	_ = u.schemaList.SetModel([]string{})
+	// Double-click (or Enter) on a table inserts a SELECT TOP query for it.
+	u.schemaList.ItemActivated().Attach(func() {
+		u.generateQuickQuery("top")
+	})
 	u.schemaList.CurrentIndexChanged().Attach(func() {
 		idx := u.schemaList.CurrentIndex()
 		u.selectedSchemaID = idx
@@ -1484,11 +1488,17 @@ func (u *applicationUI) generateQuickQuery(mode string) {
 		}
 	}
 
+	// Append instead of replacing the editor contents (the old behaviour threw
+	// away whatever the user had typed), then select the new statement.
+	text, start, end := core.AppendStatement(tab.Editor.Text(), query)
 	tab.suppressDirty = true
-	_ = tab.Editor.SetText(query)
+	_ = tab.Editor.SetText(text)
 	tab.suppressDirty = false
+	tab.Editor.SetTextSelection(core.ByteOffsetToUTF16Offset(text, start), core.ByteOffsetToUTF16Offset(text, end))
+	_ = tab.Editor.SetFocus()
 	tab.Dirty = true
 	u.refreshTabTitle(tab)
+	u.refreshState()
 }
 
 func (u *applicationUI) loadMoreRows() {
@@ -1958,7 +1968,11 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = dlg.SetCancelButton(cancelBtn)
 
 	applyModeVisibility()
-	dlg.Run()
+	connected := dlg.Run() == walk.DlgCmdOK
+	if connected {
+		// Fill the schema browser right away (cached per session; F8 refreshes).
+		u.loadSchema(false)
+	}
 	// Back in the main window: put the caret in the editor so the user can type SQL right away.
 	if tab := u.currentEditorTab(); tab != nil {
 		_ = tab.Editor.SetFocus()
