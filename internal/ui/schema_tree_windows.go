@@ -109,7 +109,9 @@ func (u *applicationUI) buildSchemaTree(parent walk.Container, layout *walk.BoxL
 		}
 	})
 	add("Copy name", func() {
-		if node := u.currentSchemaNode(); node != nil && node.Kind == app.NodeColumn {
+		if node := u.currentSchemaNode(); node != nil && node.Kind == app.NodeInfo {
+			_ = walk.Clipboard().SetText(node.Label)
+		} else if node != nil && node.Kind == app.NodeColumn {
 			_ = walk.Clipboard().SetText(core.QuoteIdent(node.Column, u.identQuote()))
 		} else if t := u.selectedSchemaTable(); t != nil {
 			_ = walk.Clipboard().SetText(u.sqlName(*t))
@@ -131,6 +133,20 @@ func (u *applicationUI) currentSchemaNode() *app.SchemaNode {
 	return nil
 }
 
+// databaseInfoNode is the "Database information" tree node for the active
+// session, from the cached SQLGetInfo result (no database round trip).
+func (u *applicationUI) databaseInfoNode() *app.SchemaNode {
+	session, err := u.manager.ActiveSession()
+	if err != nil {
+		return nil
+	}
+	info, ok := u.manager.CachedDBInfo(session.ID)
+	if !ok {
+		return nil
+	}
+	return app.DatabaseInfoNode(info)
+}
+
 // setSchemaSnapshot shows a (possibly filtered) schema snapshot in the tree.
 // Groups are expanded; tables stay collapsed.
 func (u *applicationUI) setSchemaSnapshot(snapshot odbc.SchemaSnapshot) {
@@ -141,10 +157,19 @@ func (u *applicationUI) setSchemaSnapshot(snapshot odbc.SchemaSnapshot) {
 	if u.schemaTree == nil {
 		return
 	}
-	model := &schemaTreeModel{roots: wrapSchemaNodes(app.BuildSchemaTree(snapshot, u.cfg.App.HideSystemTables), nil)}
-	_ = u.schemaTree.SetModel(model)
 	filtering := strings.TrimSpace(u.schemaSearchEntry.Text()) != ""
+	nodes := app.BuildSchemaTree(snapshot, u.cfg.App.HideSystemTables)
+	if !filtering {
+		if info := u.databaseInfoNode(); info != nil {
+			nodes = append(nodes, info)
+		}
+	}
+	model := &schemaTreeModel{roots: wrapSchemaNodes(nodes, nil)}
+	_ = u.schemaTree.SetModel(model)
 	for _, g := range model.roots {
+		if g.node.Kind != app.NodeGroup {
+			continue // "Database information" starts collapsed
+		}
 		_ = u.schemaTree.SetExpanded(g, true)
 		if filtering {
 			// Show the matching columns right away while searching.

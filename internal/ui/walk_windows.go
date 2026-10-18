@@ -1425,7 +1425,10 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 		} else {
 			snapshot, loadErr = u.manager.LoadSchema(session.ID, search)
 		}
-		_, _ = u.manager.DBInfo(session.ID) // SQLGetInfo: DBMS/driver for About and the limit syntax
+		// SQLGetInfo: DBMS/driver for About, the schema tree and the limit syntax.
+		if _, err := u.manager.DBInfo(session.ID); err != nil {
+			log.Printf("database info unavailable: %v", err)
+		}
 		u.runOnMain(func() {
 			if loadErr != nil {
 				showErrorBox(u.mainWindow, "Schema", loadErr)

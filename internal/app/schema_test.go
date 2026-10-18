@@ -73,3 +73,23 @@ func TestColumnLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestDatabaseInfoNode(t *testing.T) {
+	if n := DatabaseInfoNode(odbc.DBInfo{}); n != nil {
+		t.Fatalf("empty info should give no node, got %+v", n)
+	}
+	n := DatabaseInfoNode(odbc.DBInfo{DBMSName: "SQLite", DBMSVersion: "3.46.1", DriverName: "sqlite3odbc.dll", DriverVersion: "0.9999", IdentifierQuote: `"`})
+	if n == nil || n.Kind != NodeInfo || n.Table != -1 || len(n.Children) != 3 {
+		t.Fatalf("node = %+v", n)
+	}
+	want := []string{"DBMS: SQLite 3.46.1", "Driver: sqlite3odbc.dll 0.9999", `Identifier quote: "`}
+	for i, c := range n.Children {
+		if c.Label != want[i] || c.Parent != n || c.Kind != NodeInfo || c.Table != -1 {
+			t.Errorf("child %d = %+v, want %q", i, c, want[i])
+		}
+	}
+	n = DatabaseInfoNode(odbc.DBInfo{DriverName: "x.dll"})
+	if len(n.Children) != 2 || n.Children[1].Label != "Identifier quote: (none)" {
+		t.Fatalf("no quote: %+v", n.Children)
+	}
+}

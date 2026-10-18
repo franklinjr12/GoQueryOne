@@ -79,6 +79,21 @@ func (s *Session) closeCatalog() {
 	}
 }
 
+// CachedDBInfo returns the session's DBInfo if DBInfo already fetched it.
+// It never touches the database, so the UI thread can call it.
+func (m *Manager) CachedDBInfo(sessionID string) (DBInfo, bool) {
+	s, err := m.GetSession(sessionID)
+	if err != nil {
+		return DBInfo{}, false
+	}
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	if s.dbInfo == nil {
+		return DBInfo{}, false
+	}
+	return *s.dbInfo, true
+}
+
 // DBInfo returns DBMS and driver names/versions for the session, from
 // SQLGetInfo when the native catalog is available. The result is cached.
 func (m *Manager) DBInfo(sessionID string) (DBInfo, error) {

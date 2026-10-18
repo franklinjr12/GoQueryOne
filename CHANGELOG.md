@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Schema tree "Database information" node (DBMS, driver, identifier quote
+  from SQLGetInfo; Copy name copies a line).
 - Edit > Find (Ctrl+F) and Find next (F3) in the SQL editor.
 - Click a results column header to sort (numbers numerically, NULLs first;
   click again for descending, click `#` for the original order). Copy and

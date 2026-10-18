@@ -169,12 +169,22 @@ func TestTableDetailsUsesCatalogAndFallsBackPerPiece(t *testing.T) {
 func TestDBInfoCachedAndRecorded(t *testing.T) {
 	fc := sampleCatalog()
 	m, s := catalogManager(t, fc, nil)
+	if _, ok := m.CachedDBInfo(s.ID); ok || fc.opens != 0 {
+		t.Fatalf("CachedDBInfo before DBInfo: ok=%v opens=%d", ok, fc.opens)
+	}
 	info, err := m.DBInfo(s.ID)
 	if err != nil || info.DBMSName != "FakeDB" {
 		t.Fatalf("info=%+v err=%v", info, err)
 	}
 	if _, err := m.DBInfo(s.ID); err != nil || fc.opens != 1 {
 		t.Fatalf("second DBInfo: err=%v opens=%d", err, fc.opens)
+	}
+
+	if c, ok := m.CachedDBInfo(s.ID); !ok || c != info {
+		t.Fatalf("CachedDBInfo = %+v %v", c, ok)
+	}
+	if _, ok := m.CachedDBInfo("nope"); ok {
+		t.Fatal("CachedDBInfo for unknown session")
 	}
 	if s.ConnectedInfo["dbms"] != "FakeDB 1.2" || s.ConnectedInfo["odbcDriver"] != "fake.dll 03.80" {
 		t.Fatalf("ConnectedInfo = %+v", s.ConnectedInfo)

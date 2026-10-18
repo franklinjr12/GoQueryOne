@@ -15,6 +15,7 @@ const (
 	NodeGroup  SchemaNodeKind = iota // "Tables (12)", "Views (3)", …
 	NodeTable                        // a table or view
 	NodeColumn                       // a column of its parent table
+	NodeInfo                         // "Database information" and its lines (SQLGetInfo)
 )
 
 // SchemaNode is one node of the schema browser tree.
@@ -110,4 +111,26 @@ func BuildSchemaTree(snap odbc.SchemaSnapshot, hideSystem bool) []*SchemaNode {
 		roots = append(roots, group)
 	}
 	return roots
+}
+
+// DatabaseInfoNode is the "Database information" root (DBMS, driver and
+// identifier quote from SQLGetInfo), or nil when nothing is known.
+func DatabaseInfoNode(info odbc.DBInfo) *SchemaNode {
+	root := &SchemaNode{Kind: NodeInfo, Label: "Database information", Table: -1}
+	add := func(label, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			root.Children = append(root.Children, &SchemaNode{Kind: NodeInfo, Label: label + ": " + value, Table: -1, Parent: root})
+		}
+	}
+	add("DBMS", info.DBMSName+" "+info.DBMSVersion)
+	add("Driver", info.DriverName+" "+info.DriverVersion)
+	if len(root.Children) == 0 {
+		return nil
+	}
+	quote := info.IdentifierQuote
+	if strings.TrimSpace(quote) == "" {
+		quote = "(none)"
+	}
+	add("Identifier quote", quote)
+	return root
 }
