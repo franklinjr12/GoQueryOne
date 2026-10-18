@@ -31,6 +31,9 @@ type AppConfig struct {
 	EditorFontSize int `json:"editorFontSize,omitempty"`
 	// HideSystemTables leaves the "System tables" group out of the schema tree.
 	HideSystemTables bool `json:"hideSystemTables,omitempty"`
+	// OpenFiles are the SQL files open in editor tabs at exit (reopened at
+	// startup; unsaved untitled tabs are not kept).
+	OpenFiles []string `json:"openFiles,omitempty"`
 }
 
 type WindowConfig struct {

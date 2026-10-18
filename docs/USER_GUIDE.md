@@ -124,3 +124,13 @@ profile. Delete that file to clear it.
 - **File DSN** mode has a Browse… button.
 - The dialog title shows whether the exe uses 32-bit or 64-bit ODBC drivers and DSNs.
 - Test shows its result under the buttons instead of in a message box.
+
+## Settings and what is remembered
+
+**Tools > Settings…** sets the statement timeout, maximum rows fetched, rows added by *Load
+more*, editor font size, whether system tables appear in the schema tree, stop-on-error for
+scripts and opt-in history saving.
+
+On exit GoQueryOne remembers, in `config.json`: the window position and size (maximized
+too), the splitter positions, and the SQL files open in tabs (reopened at startup; untitled
+tabs are not kept, so save them first).

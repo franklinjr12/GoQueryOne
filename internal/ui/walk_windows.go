@@ -234,6 +234,7 @@ func (u *applicationUI) run() error {
 	}
 	u.restoreProfiles()
 	u.applyHistorySetting()
+	u.restoreOpenFiles()
 	u.refreshState()
 	u.placeMainWindow()
 	// Restore splitters once the window is shown and laid out.
@@ -311,6 +312,7 @@ func (u *applicationUI) build() error {
 			return
 		}
 		u.saveMainWindowPlacement()
+		u.cfg.App.OpenFiles = u.openFilePaths()
 		for _, sp := range u.splitters {
 			_ = sp.SaveState()
 		}
@@ -547,20 +549,51 @@ func (u *applicationUI) openSQLFile() {
 		return
 	}
 
-	raw, err := os.ReadFile(dlg.FilePath)
-	if err != nil {
+	if err := u.openSQLPath(dlg.FilePath); err != nil {
 		showErrorBox(u.mainWindow, "Open SQL", err)
-		return
 	}
+}
 
-	name := filepath.Base(dlg.FilePath)
+// openSQLPath opens a SQL file in a new editor tab.
+func (u *applicationUI) openSQLPath(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(path)
 	u.addEditorTab(name, string(raw))
 	tab := u.currentEditorTab()
 	if tab != nil {
-		tab.FilePath = dlg.FilePath
+		tab.FilePath = path
 		tab.Title = name
 		tab.Dirty = false
 		u.refreshTabTitle(tab)
+	}
+	return nil
+}
+
+// openFilePaths lists the file-backed editor tabs in tab order.
+func (u *applicationUI) openFilePaths() []string {
+	var out []string
+	pages := u.editorTabs.Pages()
+	for i := 0; i < pages.Len(); i++ {
+		if tab := u.editorTabIndex[pages.At(i)]; tab != nil && tab.FilePath != "" {
+			out = append(out, tab.FilePath)
+		}
+	}
+	return out
+}
+
+// restoreOpenFiles reopens the SQL files that were open at the last exit.
+func (u *applicationUI) restoreOpenFiles() {
+	exists := func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir()
+	}
+	for _, p := range app.FilesToRestore(u.cfg.App.OpenFiles, exists) {
+		if err := u.openSQLPath(p); err != nil {
+			u.appendMessage("Could not reopen " + p + ": " + err.Error())
+		}
 	}
 }
 
