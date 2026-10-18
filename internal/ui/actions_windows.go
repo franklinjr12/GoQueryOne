@@ -36,24 +36,36 @@ type uiActions struct {
 	odbcAdminNative, odbcAdmin64, odbcAdmin32       *walk.Action
 	export, help, about                             *walk.Action
 	statusItems                                     []*walk.StatusBarItem
-	statusWidths                                    []int
+	// toolbar holds the icon twin of a menu action. Menus get no images
+	// (24px bitmaps overlap menu text); the toolbar twin carries the icon.
+	toolbar      map[*walk.Action]*walk.Action
+	statusWidths []int
 }
 
 func (u *applicationUI) newAction(text, icon string, sc walk.Shortcut, handler func()) *walk.Action {
+	trigger := func() {
+		handler()
+		u.refreshState()
+	}
 	a := walk.NewAction()
 	_ = a.SetText(text)
 	if sc.Key != 0 {
 		_ = a.SetShortcut(sc)
 	}
+	a.Triggered().Attach(trigger)
 	if icon != "" {
 		if bmp := u.loadIcon(icon); bmp != nil {
-			_ = a.SetImage(bmp)
+			tb := walk.NewAction()
+			label := strings.TrimSuffix(text, "…")
+			if sc.Key != 0 {
+				label += " (" + sc.String() + ")"
+			}
+			_ = tb.SetText(label)
+			_ = tb.SetImage(bmp)
+			tb.Triggered().Attach(trigger)
+			u.actions.toolbar[a] = tb
 		}
 	}
-	a.Triggered().Attach(func() {
-		handler()
-		u.refreshState()
-	})
 	return a
 }
 
@@ -99,7 +111,7 @@ func addMenu(mw *walk.MainWindow, title string, actions ...*walk.Action) error {
 func (u *applicationUI) buildActions() error {
 	ctrl := func(k walk.Key) walk.Shortcut { return walk.Shortcut{Modifiers: walk.ModControl, Key: k} }
 	key := func(k walk.Key) walk.Shortcut { return walk.Shortcut{Key: k} }
-	a := &uiActions{}
+	a := &uiActions{toolbar: map[*walk.Action]*walk.Action{}}
 	u.actions = a
 
 	a.connect = u.newAction("Connect…", "connect", walk.Shortcut{Modifiers: walk.ModControl | walk.ModShift, Key: walk.KeyC}, u.showConnectionWindow)
@@ -189,6 +201,9 @@ func (u *applicationUI) buildActions() error {
 			addSeparator(tb.Actions())
 			continue
 		}
+		if twin, ok := a.toolbar[act]; ok {
+			act = twin
+		}
 		if err := tb.Actions().Add(act); err != nil {
 			return err
 		}
@@ -212,9 +227,12 @@ func (u *applicationUI) buildActions() error {
 
 // --- app.View implementation ---
 
-func setEnabled(a *walk.Action, v bool) {
+func (u *applicationUI) setEnabled(a *walk.Action, v bool) {
 	if a != nil && a.Enabled() != v {
 		_ = a.SetEnabled(v)
+	}
+	if twin := u.actions.toolbar[a]; twin != nil && twin.Enabled() != v {
+		_ = twin.SetEnabled(v)
 	}
 }
 
@@ -224,29 +242,29 @@ func (u *applicationUI) SetActionsEnabled(e app.Actions) {
 	if a == nil {
 		return
 	}
-	setEnabled(a.connect, e.Connect)
-	setEnabled(a.disconnect, e.Disconnect)
-	setEnabled(a.newTab, e.NewTab)
-	setEnabled(a.open, e.Open)
-	setEnabled(a.save, e.Save)
-	setEnabled(a.saveAs, e.SaveAs)
-	setEnabled(a.closeTab, e.CloseTab)
-	setEnabled(a.renameTab, e.CloseTab)
-	setEnabled(a.run, e.Run)
-	setEnabled(a.runCtrlEnter, e.Run)
-	setEnabled(a.runScript, e.RunScript)
-	setEnabled(a.cancel, e.Cancel)
-	setEnabled(a.loadMore, e.LoadMore)
-	setEnabled(a.begin, e.Begin)
-	setEnabled(a.commit, e.Commit)
-	setEnabled(a.rollback, e.Rollback)
-	setEnabled(a.refreshSchema, e.RefreshSchema)
-	setEnabled(a.copyRows, e.CopyRows)
-	setEnabled(a.copyHeaders, e.CopyRows)
-	setEnabled(a.copyAll, e.CopyAll)
-	setEnabled(a.copyCSV, e.CopyAll)
-	setEnabled(a.export, e.Export)
-	setEnabled(a.toggleText, e.ToggleText)
+	u.setEnabled(a.connect, e.Connect)
+	u.setEnabled(a.disconnect, e.Disconnect)
+	u.setEnabled(a.newTab, e.NewTab)
+	u.setEnabled(a.open, e.Open)
+	u.setEnabled(a.save, e.Save)
+	u.setEnabled(a.saveAs, e.SaveAs)
+	u.setEnabled(a.closeTab, e.CloseTab)
+	u.setEnabled(a.renameTab, e.CloseTab)
+	u.setEnabled(a.run, e.Run)
+	u.setEnabled(a.runCtrlEnter, e.Run)
+	u.setEnabled(a.runScript, e.RunScript)
+	u.setEnabled(a.cancel, e.Cancel)
+	u.setEnabled(a.loadMore, e.LoadMore)
+	u.setEnabled(a.begin, e.Begin)
+	u.setEnabled(a.commit, e.Commit)
+	u.setEnabled(a.rollback, e.Rollback)
+	u.setEnabled(a.refreshSchema, e.RefreshSchema)
+	u.setEnabled(a.copyRows, e.CopyRows)
+	u.setEnabled(a.copyHeaders, e.CopyRows)
+	u.setEnabled(a.copyAll, e.CopyAll)
+	u.setEnabled(a.copyCSV, e.CopyAll)
+	u.setEnabled(a.export, e.Export)
+	u.setEnabled(a.toggleText, e.ToggleText)
 	if u.loadMoreButton != nil {
 		u.loadMoreButton.SetVisible(e.LoadMore)
 	}

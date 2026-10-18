@@ -77,34 +77,43 @@ MAIN=$(timeout 60 bash -c "until xdotool search --name '^GoQueryOne' >/dev/null 
 shot 01-startup 3
 
 if [ "${SKIP_FLOWS:-0}" != "1" ]; then
-  # Flows use keyboard shortcuts plus one click into the editor (layout at
-  # 1600x1000, window at 40,40 sized 1260x760). Best effort: a failing step
-  # leaves the screenshots taken so far. No window manager is needed.
+  # Without a window manager, X focus must be set explicitly (xdotool
+  # windowfocus) before sending keys. Layout assumes 1600x1000 with the
+  # window at 40,40 sized 1260x760. Best effort: a failing step keeps the
+  # screenshots taken so far.
   set +e
   EDIT_X=${EDIT_X:-980} EDIT_Y=${EDIT_Y:-300}
+  focus_main() { xdotool windowfocus "$MAIN" 2>/dev/null; sleep 0.3; }
+  focus_editor() { focus_main; xdotool mousemove "$EDIT_X" "$EDIT_Y" click 1; sleep 0.5; }
   typeln() { xdotool type --delay 15 "$1"; xdotool key Return; }
-  xdotool windowfocus "$MAIN" 2>/dev/null
+  focus_main
+  xdotool mousemove 700 600 click 1
   xdotool key ctrl+shift+c                                   # Tools > Connect
+  DLG=$(timeout 10 bash -c "until xdotool search --name '^Connection$' >/dev/null 2>&1; do sleep 0.5; done; xdotool search --name '^Connection$' | head -1")
   shot 02-connect-dialog 2
-  xdotool key Return                                         # Connect with the preselected profile
+  if [ -n "$DLG" ]; then xdotool windowfocus "$DLG"; sleep 0.3; xdotool key Return; fi   # Connect (default button)
   shot 03-connected 5
-  xdotool windowfocus "$MAIN" 2>/dev/null                   # no WM: give X focus back to the main window
-  xdotool mousemove "$EDIT_X" "$EDIT_Y" click 1
-  sleep 1
-  typeln "SELECT id, name, city, balance, NULL AS nothing, 'NULL' AS text_null FROM customers;"
+  # warm-up: after the modal dialog closes the first keystrokes can be lost
+  focus_editor; sleep 1
+  typeln "                    SELECT id, name, city, balance, NULL AS null_value, 'NULL' AS text_null FROM customers;"
   xdotool key Up F5                                          # caret on the SELECT line: runs only that statement
   shot 04-query-results 3
+  focus_main
+  xdotool mousemove 698 474 click 1; sleep 1                 # Results tab (an error clears the grid, so do this right after the query)
+  focus_editor; sleep 0.5; xdotool key F9
+  shot 07-text-view 2
+  xdotool mousemove 545 103 click 1                          # back to the grid
+  focus_editor
   xdotool key ctrl+End Return
   typeln "INSERT INTO orders (customer_id, total, created_at) VALUES (1, 10.5, '2026-10-18');"
   xdotool key F5                                             # caret after the INSERT: runs only the INSERT
   shot 05-insert-messages 3
+  focus_editor
   xdotool key ctrl+End Return
   typeln "SELECT * FROM no_such_table;"
   xdotool key F5
   shot 06-error 3
-  xdotool key F9                                             # text view of the last result set
-  shot 07-text-view 2
-  xdotool key F9
+  focus_main
   xdotool key alt+q                                          # Query menu
   shot 08-query-menu 2
   xdotool key Escape Escape

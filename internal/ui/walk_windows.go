@@ -76,7 +76,7 @@ func (m *resultsTableModel) Value(row, col int) interface{} {
 }
 
 func (m *resultsTableModel) isNull(row, col int) bool {
-	return row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col]
+	return row >= 0 && col >= 0 && row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col]
 }
 
 // StyleCell greys out NULL cells and the row-number column.
@@ -85,6 +85,10 @@ func (m *resultsTableModel) StyleCell(style *walk.CellStyle) {
 		return
 	}
 	row, col := style.Row(), style.Col()
+	if row < 0 || col < 0 {
+		// walk also asks for whole-row styles (col -1); nothing to do there.
+		return
+	}
 	if col == 0 {
 		style.TextColor = walk.RGB(120, 120, 120)
 		style.BackgroundColor = walk.RGB(243, 243, 243)
@@ -241,6 +245,9 @@ func (u *applicationUI) run() error {
 	u.restoreProfiles()
 	u.refreshState()
 	u.mainWindow.Show()
+	if tab := u.currentEditorTab(); tab != nil {
+		_ = tab.Editor.SetFocus()
+	}
 	u.mainWindow.Run()
 	return nil
 }
@@ -411,7 +418,7 @@ func (u *applicationUI) addEditorTab(baseTitle, content string) {
 	}
 	_ = editor.SetText(content)
 	_ = layout.SetStretchFactor(editor, 1)
-	if font, fontErr := walk.NewFont("Consolas", 10, 0); fontErr == nil {
+	if font := monoFont(10); font != nil {
 		editor.SetFont(font)
 	}
 	editor.KeyUp().Attach(func(walk.Key) { u.refreshState() })
@@ -790,7 +797,7 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 		return nil, err
 	}
 	_ = u.resultsText.SetReadOnly(true)
-	if font, fontErr := walk.NewFont("Consolas", 9, 0); fontErr == nil {
+	if font := monoFont(9); font != nil {
 		u.resultsText.SetFont(font)
 	}
 	u.resultsText.SetVisible(false)
@@ -1907,15 +1914,27 @@ func (u *applicationUI) showConnectionWindow() {
 		showInfoBox(dlg, "Profiles", "Profile saved.")
 	})
 
+	connecting := false
 	connectBtn.Clicked().Attach(func() {
+		// Connect runs in the background; ignore a second click (or Return)
+		// while it is in flight instead of opening the session twice.
+		if connecting {
+			return
+		}
 		profile, password, buildErr := buildProfile()
 		if buildErr != nil {
 			showErrorBox(dlg, "Connect", buildErr)
 			return
 		}
+		connecting = true
+		connectBtn.SetEnabled(false)
+		_ = connectBtn.SetText("Connecting…")
 		go func() {
 			_, connectErr := u.manager.Connect(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
+				connecting = false
+				connectBtn.SetEnabled(true)
+				_ = connectBtn.SetText("Connect")
 				if connectErr != nil {
 					showErrorBox(dlg, "Connect", connectErr)
 					return
@@ -1940,6 +1959,11 @@ func (u *applicationUI) showConnectionWindow() {
 
 	applyModeVisibility()
 	dlg.Run()
+	// Back in the main window: put the caret in the editor so the user can type SQL right away.
+	if tab := u.currentEditorTab(); tab != nil {
+		_ = tab.Editor.SetFocus()
+	}
+	u.refreshState()
 }
 func (u *applicationUI) showAbout() {
 	var report strings.Builder
