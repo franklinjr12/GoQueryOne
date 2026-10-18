@@ -1462,15 +1462,7 @@ func (u *applicationUI) generateQuickQuery(mode string) {
 	case "count":
 		query = "SELECT COUNT(*) AS row_count FROM " + name + ";"
 	case "top":
-		limitSyntax := "TOP"
-		if session, err := u.manager.ActiveSession(); err == nil && session.Profile.Options.LimitSyntax != "" {
-			limitSyntax = strings.ToUpper(session.Profile.Options.LimitSyntax)
-		}
-		if limitSyntax == "LIMIT" {
-			query = "SELECT * FROM " + name + " LIMIT 100;"
-		} else {
-			query = "SELECT TOP 100 * FROM " + name + ";"
-		}
+		query = core.SelectTop(u.limitSyntax(), name, 100)
 	}
 
 	// Append instead of replacing the editor contents (the old behaviour threw
@@ -1484,6 +1476,34 @@ func (u *applicationUI) generateQuickQuery(mode string) {
 	tab.Dirty = true
 	u.refreshTabTitle(tab)
 	u.refreshState()
+}
+
+// limitSyntax returns the row-limit syntax for the active connection: an
+// explicit LIMIT/FETCH/FIRST from the profile wins; otherwise (empty, "auto",
+// or the old hard-coded "TOP" default) it is guessed from the driver name,
+// the connection string and the DSN's registered driver.
+func (u *applicationUI) limitSyntax() string {
+	session, err := u.manager.ActiveSession()
+	if err != nil {
+		return core.LimitTop
+	}
+	p := session.Profile
+	if s := core.NormalizeLimitSyntax(p.Options.LimitSyntax); s != "" && s != core.LimitTop {
+		return s
+	}
+	hints := []string{p.Driver, p.ConnectionString}
+	if p.DSN != "" {
+		if dsns, dsnErr := odbc.ListDSNs(); dsnErr == nil {
+			for _, d := range dsns {
+				if strings.EqualFold(d.Name, p.DSN) {
+					hints = append(hints, d.Driver)
+					break
+				}
+			}
+		}
+		hints = append(hints, p.DSN)
+	}
+	return core.DetectLimitSyntax(hints...)
 }
 
 func (u *applicationUI) loadMoreRows() {
@@ -1790,7 +1810,7 @@ func (u *applicationUI) showConnectionWindow() {
 			SavePassword: savePasswordCheck.Checked(),
 			Options: config.ConnectionOptions{
 				LoginTimeoutMs: 30000,
-				LimitSyntax:    "TOP",
+				LimitSyntax:    "auto",
 			},
 		}
 		password := passEntry.Text()

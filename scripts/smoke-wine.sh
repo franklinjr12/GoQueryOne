@@ -117,6 +117,11 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   xdotool key alt+q                                          # Query menu
   shot 08-query-menu 2
   xdotool key Escape Escape
+  focus_main
+  xdotool mousemove 94 223 click --repeat 2 --delay 120 1    # double-click the first table: appends SELECT TOP/LIMIT
+  sleep 1
+  xdotool key F5
+  shot 09-schema-quick-query 3
   set -e
 fi
 

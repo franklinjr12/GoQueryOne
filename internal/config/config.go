@@ -225,7 +225,7 @@ func migrateLegacy(path string, data []byte) (*Config, error) {
 			SavePassword: false,
 			Options: ConnectionOptions{
 				LoginTimeoutMs: timeout,
-				LimitSyntax:    "TOP",
+				LimitSyntax:    "auto",
 			},
 		})
 	}
