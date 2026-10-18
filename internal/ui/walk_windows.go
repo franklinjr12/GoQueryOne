@@ -3,8 +3,6 @@
 package ui
 
 import (
-	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +16,7 @@ import (
 	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/core"
+	"github.com/franklinjr12/GoQueryOne/internal/export"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/securestore"
 	"github.com/lxn/walk"
@@ -1196,7 +1195,7 @@ func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
 		}
 		u.appendMessage(fmt.Sprintf("%s  %d rows, %d columns retrieved in %s", time.Now().Format("15:04:05"), res.ResultSet.RowCount, len(res.ResultSet.Columns), core.FormatDuration(res.ExecutionTime)))
 		if u.outputEnabled {
-			u.appendMessage(FormatResultAsCSVLike(&res))
+			u.appendMessage(export.TextString(u.currentTable(), export.TextOptions{}))
 		}
 		return
 	}
@@ -1481,16 +1480,21 @@ func (u *applicationUI) copyAllRows(delimiter string) {
 	if len(u.resultsColumns) == 0 {
 		return
 	}
-	lines := make([]string, 0, len(u.resultsRows)+1)
-	lines = append(lines, strings.Join(u.resultsColumns, delimiter))
-	for _, row := range u.resultsRows {
-		clean := make([]string, len(row))
-		for i, col := range row {
-			clean[i] = strings.ReplaceAll(strings.ReplaceAll(col, "\r", " "), "\n", " ")
-		}
-		lines = append(lines, strings.Join(clean, delimiter))
+	var text string
+	if delimiter == "," {
+		var b strings.Builder
+		_ = export.WriteCSV(&b, u.currentTable(), export.CSVOptions{Header: true, CRLF: true})
+		text = b.String()
+	} else {
+		text = export.TSVString(u.currentTable(), true)
 	}
-	_ = walk.Clipboard().SetText(strings.Join(lines, "\n"))
+	_ = walk.Clipboard().SetText(text)
+}
+
+// currentTable converts the displayed result set into the export model
+// (NULLs stay distinct from empty strings and from the text "NULL").
+func (u *applicationUI) currentTable() export.Table {
+	return export.Table{Columns: u.resultsColumns, Rows: u.resultsRows, Nulls: u.resultsNulls}
 }
 
 func (u *applicationUI) exportResults() {
@@ -1502,7 +1506,7 @@ func (u *applicationUI) exportResults() {
 	dlg := walk.FileDialog{
 		Title:       "Export Results",
 		FilePath:    "result.csv",
-		Filter:      "CSV (*.csv)|*.csv|TSV (*.tsv)|*.tsv|JSON (*.json)|*.json",
+		Filter:      "CSV (*.csv)|*.csv|TSV (*.tsv)|*.tsv|JSON (*.json)|*.json|Markdown (*.md)|*.md|Text (*.txt)|*.txt",
 		FilterIndex: 1,
 	}
 	accepted, err := dlg.ShowSave(u.mainWindow)
@@ -1514,57 +1518,26 @@ func (u *applicationUI) exportResults() {
 		return
 	}
 
+	format, ok := export.ByExtension(dlg.FilePath)
+	if !ok {
+		format = export.CSV
+		if !strings.Contains(filepath.Base(dlg.FilePath), ".") {
+			dlg.FilePath += ".csv"
+		}
+	}
 	file, err := os.Create(dlg.FilePath)
 	if err != nil {
 		showErrorBox(u.mainWindow, "Export", err)
 		return
 	}
-	defer file.Close()
-
-	ext := strings.ToLower(filepath.Ext(dlg.FilePath))
-	switch ext {
-	case ".json":
-		rows := make([]map[string]string, 0, len(u.resultsRows))
-		for _, row := range u.resultsRows {
-			item := map[string]string{}
-			for i := range u.resultsColumns {
-				if i < len(row) {
-					item[u.resultsColumns[i]] = row[i]
-				} else {
-					item[u.resultsColumns[i]] = ""
-				}
-			}
-			rows = append(rows, item)
-		}
-		enc := json.NewEncoder(file)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rows); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
-	case ".tsv":
-		writer := csv.NewWriter(file)
-		writer.Comma = '\t'
-		_ = writer.Write(u.resultsColumns)
-		for _, row := range u.resultsRows {
-			_ = writer.Write(row)
-		}
-		writer.Flush()
-		if err := writer.Error(); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
-	default:
-		writer := csv.NewWriter(file)
-		_ = writer.Write(u.resultsColumns)
-		for _, row := range u.resultsRows {
-			_ = writer.Write(row)
-		}
-		writer.Flush()
-		if err := writer.Error(); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
+	writeErr := export.Write(file, u.currentTable(), format)
+	closeErr := file.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		showErrorBox(u.mainWindow, "Export", writeErr)
+		return
 	}
 
 	u.appendMessage("Export completed: " + dlg.FilePath)
