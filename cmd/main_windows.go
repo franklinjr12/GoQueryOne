@@ -67,6 +67,11 @@ func main() {
 		ui.ShowMessage("GoQueryOne", "GoQueryOne could not start:\n\n"+err.Error(), true)
 		os.Exit(1)
 	}
+	// Clean exit: drop the crash log if nothing was written to it.
+	_ = debug.SetCrashOutput(nil, debug.CrashOptions{}) // release the handle first (Windows)
+	if st, err := os.Stat(crashPath); err == nil && st.Size() == 0 {
+		_ = os.Remove(crashPath)
+	}
 }
 
 func appendFile(path, text string) {
