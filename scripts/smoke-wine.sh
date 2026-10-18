@@ -118,10 +118,14 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   shot 08-query-menu 2
   xdotool key Escape Escape
   focus_main
-  xdotool mousemove 94 223 click --repeat 2 --delay 120 1    # double-click the first table: appends SELECT TOP/LIMIT
+  xdotool mousemove 114 241 click --repeat 2 --delay 120 1   # double-click it: appends SELECT TOP/LIMIT
   sleep 1
   xdotool key F5
   shot 09-schema-quick-query 3
+  focus_main
+  xdotool mousemove 114 241 click 1; sleep 0.5               # select the first table in the tree
+  xdotool key Right; sleep 0.3; xdotool key Right            # expand it (the first key after a click can be lost)
+  shot 10-schema-columns 2
   set -e
 fi
 

@@ -57,6 +57,19 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 	return filterSnapshot(*snapshot, search), nil
 }
 
+// ColumnsOf returns the cached columns of t (nil if none were loaded).
+func (s SchemaSnapshot) ColumnsOf(t SchemaTable) []SchemaColumn {
+	return s.Columns[detailsKey(t.Catalog, t.Schema, t.Name)]
+}
+
+// SetColumns stores the columns of t in the snapshot.
+func (s *SchemaSnapshot) SetColumns(t SchemaTable, cols []SchemaColumn) {
+	if s.Columns == nil {
+		s.Columns = map[string][]SchemaColumn{}
+	}
+	s.Columns[detailsKey(t.Catalog, t.Schema, t.Name)] = cols
+}
+
 func (m *Manager) RefreshSchema(sessionID, search string) (SchemaSnapshot, error) {
 	session, err := m.GetSession(sessionID)
 	if err != nil {

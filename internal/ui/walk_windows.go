@@ -144,7 +144,8 @@ type applicationUI struct {
 	lastMaxRows    int
 
 	schemaSearchEntry *walk.LineEdit
-	schemaList        *walk.ListBox
+	schemaTree        *walk.TreeView
+	schemaSnapshot    odbc.SchemaSnapshot
 	schemaDetails     *walk.TextEdit
 	schemaTables      []odbc.SchemaTable
 	selectedSchemaID  int
@@ -588,41 +589,18 @@ func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite
 		return nil, err
 	}
 
-	loadBtn, err := walk.NewPushButton(buttonRow)
-	if err != nil {
-		return nil, err
-	}
-	_ = loadBtn.SetText("Load")
-	loadBtn.Clicked().Attach(func() {
-		u.loadSchema(false)
-	})
-
 	refreshBtn, err := walk.NewPushButton(buttonRow)
 	if err != nil {
 		return nil, err
 	}
-	_ = refreshBtn.SetText("Refresh")
+	_ = refreshBtn.SetText("Refresh schema (F8)")
 	refreshBtn.Clicked().Attach(func() {
 		u.loadSchema(true)
 	})
 
-	u.schemaList, err = walk.NewListBox(topSection)
-	if err != nil {
+	if err := u.buildSchemaTree(topSection, topLayout); err != nil {
 		return nil, err
 	}
-	_ = topLayout.SetStretchFactor(u.schemaList, 1)
-	_ = u.schemaList.SetModel([]string{})
-	// Double-click (or Enter) on a table inserts a SELECT TOP query for it.
-	u.schemaList.ItemActivated().Attach(func() {
-		u.generateQuickQuery("top")
-	})
-	u.schemaList.CurrentIndexChanged().Attach(func() {
-		idx := u.schemaList.CurrentIndex()
-		u.selectedSchemaID = idx
-		if idx >= 0 && idx < len(u.schemaTables) {
-			u.showTableDetails(u.schemaTables[idx])
-		}
-	})
 
 	actionsRow1, err := walk.NewComposite(topSection)
 	if err != nil {
@@ -1344,11 +1322,7 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 				u.updateStatus()
 				return
 			}
-			u.schemaTables = snapshot.Tables
-			sort.Slice(u.schemaTables, func(i, j int) bool {
-				return strings.ToLower(qualifiedName(u.schemaTables[i])) < strings.ToLower(qualifiedName(u.schemaTables[j]))
-			})
-			u.refreshSchemaWidget()
+			u.setSchemaSnapshot(snapshot)
 			u.appendMessage(fmt.Sprintf("Schema loaded. %d tables/views.", len(u.schemaTables)))
 			u.updateStatus()
 		})
@@ -1364,28 +1338,7 @@ func (u *applicationUI) refreshSchemaList() {
 	if loadErr != nil {
 		return
 	}
-	u.schemaTables = snapshot.Tables
-	sort.Slice(u.schemaTables, func(i, j int) bool {
-		return strings.ToLower(qualifiedName(u.schemaTables[i])) < strings.ToLower(qualifiedName(u.schemaTables[j]))
-	})
-	u.refreshSchemaWidget()
-}
-
-func (u *applicationUI) refreshSchemaWidget() {
-	options := make([]string, 0, len(u.schemaTables))
-	for _, table := range u.schemaTables {
-		if table.Schema != "" {
-			options = append(options, table.Schema+"."+table.Name+" ["+table.Type+"]")
-		} else {
-			options = append(options, table.Name+" ["+table.Type+"]")
-		}
-	}
-	_ = u.schemaList.SetModel(options)
-	u.selectedSchemaID = -1
-	_ = u.schemaDetails.SetText("")
-	if len(options) > 0 {
-		_ = u.schemaList.SetCurrentIndex(0)
-	}
+	u.setSchemaSnapshot(snapshot)
 }
 
 func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
