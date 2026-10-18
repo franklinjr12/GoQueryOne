@@ -126,6 +126,10 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   xdotool mousemove 114 241 click 1; sleep 0.5               # select the first table in the tree
   xdotool key Right; sleep 0.3; xdotool key Right            # expand it (the first key after a click can be lost)
   shot 10-schema-columns 2
+  focus_main
+  xdotool key alt+t; sleep 0.5; xdotool key Up Return        # Tools > Settings… (last item)
+  shot 11-settings 2
+  xdotool key Escape
   set -e
 fi
 

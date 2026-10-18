@@ -34,6 +34,7 @@ type uiActions struct {
 	begin, commit, rollback                         *walk.Action
 	refreshSchema, toggleText                       *walk.Action
 	odbcAdminNative, odbcAdmin64, odbcAdmin32       *walk.Action
+	settings                                        *walk.Action
 	export, help, about                             *walk.Action
 	statusItems                                     []*walk.StatusBarItem
 	// toolbar holds the icon twin of a menu action. Menus get no images
@@ -148,6 +149,7 @@ func (u *applicationUI) buildActions() error {
 	a.odbcAdminNative = u.newAction("ODBC Administrator ("+nativeArch+")", "", ctrl(walk.KeyT), func() { u.openODBCAdmin(nativeArch) })
 	a.odbcAdmin64 = u.newAction("ODBC Administrator x64", "", walk.Shortcut{}, func() { u.openODBCAdmin("x64") })
 	a.odbcAdmin32 = u.newAction("ODBC Administrator x86", "", walk.Shortcut{}, func() { u.openODBCAdmin("x86") })
+	a.settings = u.newAction("Settings…", "", walk.Shortcut{}, u.showSettings)
 	a.export = u.newAction("Export results…", "export", walk.Shortcut{}, u.exportResults)
 	a.help = u.newAction("User guide", "help", key(walk.KeyF1), u.openUserGuide)
 	a.about = u.newAction("About GoQueryOne", "", walk.Shortcut{}, u.showAbout)
@@ -161,7 +163,7 @@ func (u *applicationUI) buildActions() error {
 		{"&Edit", []*walk.Action{a.copyRows, a.copyHeaders, a.copyAll, a.copyCSV}},
 		{"&Query", []*walk.Action{a.run, a.runScript, a.cancel, a.loadMore, nil, a.begin, a.commit, a.rollback}},
 		{"&View", []*walk.Action{a.refreshSchema, a.toggleText}},
-		{"&Tools", []*walk.Action{a.connect, a.disconnect, nil, a.odbcAdminNative, a.odbcAdmin64, a.odbcAdmin32, nil, a.export}},
+		{"&Tools", []*walk.Action{a.connect, a.disconnect, nil, a.odbcAdminNative, a.odbcAdmin64, a.odbcAdmin32, nil, a.export, nil, a.settings}},
 		{"&Help", []*walk.Action{a.help, a.about}},
 	}
 	for _, m := range menus {
