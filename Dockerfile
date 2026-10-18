@@ -1,45 +1,25 @@
 # syntax=docker/dockerfile:1.6
-# Multi-stage Dockerfile to build a Windows .exe for a Go/Fyne app
+# OPTIONAL: containerised build. The normal build is `make build` (or
+# scripts/check.sh build) on any machine with Go 1.24+: no C compiler, no
+# Docker needed. This file just runs the same cross-compilation in a container.
+#
+#   docker buildx build --output type=local,dest=out .
+#   -> out/GoQueryOne-x64.exe, out/GoQueryOne-x86.exe
 
-# 1) Builder with Go toolchain and MinGW for CGO cross-compilation
-FROM golang:1.22-bookworm AS builder
-
-ENV CGO_ENABLED=1 \
-    GOOS=windows \
-    GOARCH=386 \
-    CC=i686-w64-mingw32-gcc \
-    CXX=i686-w64-mingw32-g++
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        git \
-        make \
-        pkg-config \
-        mingw-w64 \
-    && rm -rf /var/lib/apt/lists/*
-
+FROM golang:1.26-bookworm AS builder
+ARG VERSION=dev
+ARG COMMIT=unknown
+ENV CGO_ENABLED=0 GOOS=windows
 WORKDIR /src
-
-# Cache deps first
 COPY go.mod go.sum ./
-# Use BuildKit cache mounts to persist module and build caches across builds
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
-
-# Copy only needed source to avoid invalidating cache unnecessarily
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    set -e; \
+    LDF="-s -w -H=windowsgui -X github.com/franklinjr12/GoQueryOne/internal/buildinfo.Version=${VERSION} -X github.com/franklinjr12/GoQueryOne/internal/buildinfo.Commit=${COMMIT}"; \
+    GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags "$LDF" -o /out/GoQueryOne-x64.exe ./cmd; \
+    GOARCH=386   go build -buildvcs=false -trimpath -ldflags "$LDF" -o /out/GoQueryOne-x86.exe ./cmd
 
-# Build the Windows GUI executable (no console window)
-# Adjust the output name if desired
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go build -buildvcs=false -ldflags "-s -w -H=windowsgui" -o /out/GoQueryOne.exe ./cmd
-
-
-# 2) Minimal final stage that only contains the build artifact
-# You can export it with BuildKit: `docker buildx build --output type=local,dest=out .`
 FROM scratch AS artifact
-COPY --from=builder /out/GoQueryOne.exe /GoQueryOne.exe
-
+COPY --from=builder /out/ /

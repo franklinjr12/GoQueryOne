@@ -24,18 +24,31 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 		return filtered, nil
 	}
 
+	if tables, columnsByTable, ok := m.catalogSchema(session); ok {
+		snapshot := &SchemaSnapshot{Tables: tables, Columns: columnsByTable, GeneratedAt: time.Now()}
+		session.SchemaCache.PutSchema(snapshot)
+		if search == "" {
+			return *snapshot, nil
+		}
+		return filterSnapshot(*snapshot, search), nil
+	}
+
 	tables, err := loadTables(session)
 	if err != nil {
 		diag := BuildDiagnostic("schema.load", "", err)
 		m.mu.Lock()
 		session.LastDiag = diag
-		session.State = SessionError
+		session.LastOutcome = "error"
+		session.LastError = err.Error()
 		m.mu.Unlock()
 		return SchemaSnapshot{}, err
 	}
 
 	columnsByTable := map[string][]SchemaColumn{}
 	for _, table := range tables {
+		if len(tables) > MaxEagerColumnTables {
+			break // large schema: columns are loaded per table on selection
+		}
 		cols, colErr := loadColumns(session, table)
 		if colErr != nil {
 			continue
@@ -56,12 +69,34 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 	return filterSnapshot(*snapshot, search), nil
 }
 
+// ColumnsOf returns the cached columns of t (nil if none were loaded).
+func (s SchemaSnapshot) ColumnsOf(t SchemaTable) []SchemaColumn {
+	return s.Columns[detailsKey(t.Catalog, t.Schema, t.Name)]
+}
+
+// SetColumns stores the columns of t in the snapshot.
+// MaxEagerColumnTables is the largest schema whose columns are loaded one
+// table at a time up front (when one catalog call for all columns is not
+// possible). Larger schemas get their columns on demand.
+const MaxEagerColumnTables = 300
+
+func (s *SchemaSnapshot) SetColumns(t SchemaTable, cols []SchemaColumn) {
+	if s.Columns == nil {
+		s.Columns = map[string][]SchemaColumn{}
+	}
+	s.Columns[detailsKey(t.Catalog, t.Schema, t.Name)] = cols
+}
+
 func (m *Manager) RefreshSchema(sessionID, search string) (SchemaSnapshot, error) {
 	session, err := m.GetSession(sessionID)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
 	session.SchemaCache.Invalidate()
+	// A manual refresh retries a native catalog connection that failed before.
+	session.catalogMu.Lock()
+	session.catalogErr = nil
+	session.catalogMu.Unlock()
 	return m.LoadSchema(sessionID, search)
 }
 
@@ -96,6 +131,9 @@ func filterSnapshot(snapshot SchemaSnapshot, search string) SchemaSnapshot {
 	return snapshot
 }
 
+// errNoPrimaryKey marks an empty SQLPrimaryKeys answer (try the fallback).
+var errNoPrimaryKey = errors.New("no primary key reported")
+
 func (m *Manager) TableDetails(sessionID, catalog, schema, table string) (TableDetails, error) {
 	session, err := m.GetSession(sessionID)
 	if err != nil {
@@ -113,28 +151,74 @@ func (m *Manager) TableDetails(sessionID, catalog, schema, table string) (TableD
 		Schema:  schema,
 		Table:   table,
 	}
-	cols, colErr := loadColumns(session, SchemaTable{Catalog: catalog, Schema: schema, Name: table})
+	ref := SchemaTable{Catalog: catalog, Schema: schema, Name: table}
+	// Each piece tries the native ODBC catalog first, then the SQL fallback.
+	var cols []SchemaColumn
+	colErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		cols, e = c.Columns(ref)
+		if e == nil && len(cols) == 0 {
+			e = errors.New("no columns")
+		}
+		return e
+	})
+	if colErr != nil {
+		cols, colErr = loadColumns(session, ref)
+	}
 	if colErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLColumns-compatible metadata for columns")
 	} else {
 		details.Columns = cols
 	}
 
-	pks, pkErr := loadPrimaryKeys(session, catalog, schema, table)
+	var pks []string
+	pkErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		pks, e = c.PrimaryKeys(ref)
+		if e == nil && len(pks) == 0 {
+			// Some drivers (e.g. sqlite3odbc for a rowid alias) report no key
+			// where the SQL fallback finds one; an empty answer is not final.
+			e = errNoPrimaryKey
+		}
+		return e
+	})
+	if pkErr != nil {
+		if fallback, fbErr := loadPrimaryKeys(session, catalog, schema, table); fbErr == nil {
+			pks, pkErr = fallback, nil
+		} else if errors.Is(pkErr, errNoPrimaryKey) {
+			pkErr = nil // the catalog answered "no key"; the fallback is just unsupported
+		}
+	}
 	if pkErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLPrimaryKeys-compatible metadata")
 	} else {
 		details.PrimaryKeys = pks
 	}
 
-	fks, fkErr := loadForeignKeys(session, catalog, schema, table)
+	var fks []ForeignKey
+	fkErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		fks, e = c.ForeignKeys(ref)
+		return e
+	})
+	if fkErr != nil {
+		fks, fkErr = loadForeignKeys(session, catalog, schema, table)
+	}
 	if fkErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLForeignKeys-compatible metadata")
 	} else {
 		details.ForeignKeys = fks
 	}
 
-	indexes, idxErr := loadIndexes(session, catalog, schema, table)
+	var indexes []IndexInfo
+	idxErr := m.withCatalog(session, func(c Catalog) error {
+		var e error
+		indexes, e = c.Indexes(ref)
+		return e
+	})
+	if idxErr != nil {
+		indexes, idxErr = loadIndexes(session, catalog, schema, table)
+	}
 	if idxErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLStatistics-compatible metadata")
 	} else {

@@ -24,6 +24,18 @@ type AppConfig struct {
 	Theme    string        `json:"theme"`
 	Window   WindowConfig  `json:"window"`
 	Logging  LoggingConfig `json:"logging"`
+	// SaveHistory persists executed statements (passwords masked) to
+	// history.jsonl next to config.json. Off by default.
+	SaveHistory bool `json:"saveHistory,omitempty"`
+	// EditorFontSize is the SQL editor font size in points (0 = default 10).
+	EditorFontSize int `json:"editorFontSize,omitempty"`
+	// HideSystemTables leaves the "System tables" group out of the schema tree.
+	HideSystemTables bool `json:"hideSystemTables,omitempty"`
+	// OpenFiles are the SQL files open in editor tabs at exit (reopened at
+	// startup; unsaved untitled tabs are not kept).
+	OpenFiles []string `json:"openFiles,omitempty"`
+	// RecentFiles feeds File > Recent files (most recent first).
+	RecentFiles []string `json:"recentFiles,omitempty"`
 }
 
 type WindowConfig struct {
@@ -31,6 +43,10 @@ type WindowConfig struct {
 	Height float32 `json:"height"`
 	X      float32 `json:"x"`
 	Y      float32 `json:"y"`
+	// Bounds above are physical pixels of the restored (non-maximized) window.
+	Maximized bool `json:"maximized,omitempty"`
+	// Splitters holds splitter positions (walk state strings, pixels).
+	Splitters map[string]string `json:"splitters,omitempty"`
 }
 
 type LoggingConfig struct {
@@ -223,7 +239,7 @@ func migrateLegacy(path string, data []byte) (*Config, error) {
 			SavePassword: false,
 			Options: ConnectionOptions{
 				LoginTimeoutMs: timeout,
-				LimitSyntax:    "TOP",
+				LimitSyntax:    "auto",
 			},
 		})
 	}
@@ -252,7 +268,7 @@ func SaveConfig(config *Config, path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write config %s: %w", path, err)
 	}
 	return nil

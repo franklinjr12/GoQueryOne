@@ -4,10 +4,18 @@ package securestore
 
 import "errors"
 
-func protectData(plain []byte) ([]byte, error) {
+// unsupportedProtector is the default Protector on non-Windows platforms,
+// where no DPAPI-equivalent secure storage is wired up.
+type unsupportedProtector struct{}
+
+func defaultProtector() Protector {
+	return unsupportedProtector{}
+}
+
+func (unsupportedProtector) Protect(plain []byte) ([]byte, error) {
 	return nil, errors.New("secure credential storage is supported on Windows only")
 }
 
-func unprotectData(ciphertext []byte) ([]byte, error) {
+func (unsupportedProtector) Unprotect(ciphertext []byte) ([]byte, error) {
 	return nil, errors.New("secure credential storage is supported on Windows only")
 }

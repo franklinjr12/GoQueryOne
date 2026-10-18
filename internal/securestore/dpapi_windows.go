@@ -9,7 +9,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func protectData(plain []byte) ([]byte, error) {
+// dpapiProtector implements Protector using Windows DPAPI
+// (CryptProtectData/CryptUnprotectData), scoped to the current user.
+type dpapiProtector struct{}
+
+func defaultProtector() Protector {
+	return dpapiProtector{}
+}
+
+func (dpapiProtector) Protect(plain []byte) ([]byte, error) {
 	if len(plain) == 0 {
 		return []byte{}, nil
 	}
@@ -31,7 +39,7 @@ func protectData(plain []byte) ([]byte, error) {
 	return result, nil
 }
 
-func unprotectData(ciphertext []byte) ([]byte, error) {
+func (dpapiProtector) Unprotect(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) == 0 {
 		return []byte{}, nil
 	}

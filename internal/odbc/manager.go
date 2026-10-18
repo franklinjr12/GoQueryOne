@@ -8,15 +8,31 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/alexbrainman/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
+	"github.com/franklinjr12/GoQueryOne/internal/core"
 )
 
 const maxHistoryEntries = 50
 
+func defaultOpener(connStr string) (*sql.DB, error) {
+	return sql.Open("odbc", connStr)
+}
+
 func NewManager() *Manager {
+	return NewManagerWithOpener(defaultOpener)
+}
+
+// NewManagerWithOpener builds a Manager that opens connections through the
+// given Opener instead of the default "odbc" driver. Tests use this to wire
+// a pure-Go driver (e.g. modernc.org/sqlite) and exercise the execution
+// engine without CGO or a system ODBC driver manager.
+func NewManagerWithOpener(opener Opener) *Manager {
+	if opener == nil {
+		opener = defaultOpener
+	}
 	return &Manager{
 		sessions: map[string]*Session{},
+		opener:   opener,
 	}
 }
 
@@ -74,6 +90,18 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		timeout = 30 * time.Second
 	}
 
+	// Saved history is read (disk I/O) before taking the Manager lock.
+	m.mu.RLock()
+	load := m.historyLoad
+	m.mu.RUnlock()
+	var preloaded []HistoryEntry
+	if load != nil {
+		preloaded = load(profile.ID)
+		if len(preloaded) > maxHistoryEntries {
+			preloaded = preloaded[len(preloaded)-maxHistoryEntries:]
+		}
+	}
+
 	m.mu.Lock()
 	if _, exists := m.sessions[profile.ID]; exists {
 		m.mu.Unlock()
@@ -87,6 +115,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		CreatedAt:   time.Now(),
 		SchemaCache: NewSchemaCache(),
 	}
+	session.History = preloaded
 	m.sessions[session.ID] = session
 	if m.activeID == "" {
 		m.activeID = session.ID
@@ -100,7 +129,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		return nil, err
 	}
 
-	db, err := sql.Open("odbc", dsn)
+	db, err := m.opener(dsn)
 	if err != nil {
 		m.setSessionError(session.ID, "connect", "", err)
 		_ = m.Disconnect(session.ID)
@@ -118,6 +147,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 
 	m.mu.Lock()
 	session.DB = db
+	session.connStr = dsn
 	session.State = SessionConnected
 	session.ConnectedAt = time.Now()
 	session.ConnectedInfo = map[string]string{
@@ -139,7 +169,7 @@ func (m *Manager) TestConnection(profile config.ConnectionProfile, password stri
 		return 0, err
 	}
 	start := time.Now()
-	db, err := sql.Open("odbc", dsn)
+	db, err := m.opener(dsn)
 	if err != nil {
 		return 0, err
 	}
@@ -160,6 +190,15 @@ func (m *Manager) Disconnect(sessionID string) error {
 		return errors.New("session not found")
 	}
 	delete(m.sessions, sessionID)
+	tx := session.Tx
+	cancel := session.ExecCancel
+	m.mu.Unlock()
+	// No new native catalog connection may be opened for a closed session
+	// (an in-flight schema load could otherwise reopen and leak one).
+	session.catalogMu.Lock()
+	session.connStr = ""
+	session.catalogMu.Unlock()
+	m.mu.Lock()
 	if m.activeID == sessionID {
 		m.activeID = ""
 		for id := range m.sessions {
@@ -169,12 +208,13 @@ func (m *Manager) Disconnect(sessionID string) error {
 	}
 	m.mu.Unlock()
 
-	if session.ExecCancel != nil {
-		session.ExecCancel()
+	if cancel != nil {
+		cancel()
 	}
-	if session.Tx != nil {
-		_ = session.Tx.Rollback()
+	if tx != nil {
+		_ = tx.Rollback()
 	}
+	session.closeCatalog()
 	if session.DB != nil {
 		return session.DB.Close()
 	}
@@ -188,44 +228,10 @@ func (m *Manager) DisconnectAll() {
 	}
 }
 
+// BuildConnectionString builds an ODBC connection string with brace
+// escaping (see core.BuildConnectionString).
 func BuildConnectionString(profile config.ConnectionProfile, password string) (string, error) {
-	base := strings.TrimSpace(profile.ConnectionString)
-	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
-	case "dsn":
-		if strings.TrimSpace(profile.DSN) == "" {
-			return "", errors.New("dsn is required")
-		}
-		base = "DSN=" + profile.DSN + ";"
-	case "connection_string":
-		if base == "" {
-			return "", errors.New("connection string is required")
-		}
-	case "file_dsn":
-		if strings.TrimSpace(profile.FilePath) == "" {
-			return "", errors.New("file dsn path is required")
-		}
-		base = "FILEDSN=" + profile.FilePath + ";"
-	case "driver":
-		if strings.TrimSpace(profile.Driver) == "" {
-			return "", errors.New("driver is required")
-		}
-		base = "Driver={" + profile.Driver + "};"
-	default:
-		return "", fmt.Errorf("unsupported connection profile type %q", profile.Type)
-	}
-	if profile.Username != "" && !containsConnKey(base, "uid") && !containsConnKey(base, "user id") {
-		base += "UID=" + profile.Username + ";"
-	}
-	if password != "" && !containsConnKey(base, "pwd") && !containsConnKey(base, "password") {
-		base += "PWD=" + password + ";"
-	}
-	return base, nil
-}
-
-func containsConnKey(connStr, key string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(connStr, " ", ""))
-	key = strings.ToLower(strings.ReplaceAll(key, " ", ""))
-	return strings.Contains(normalized, key+"=")
+	return core.BuildConnectionString(profile, password)
 }
 
 func (m *Manager) setSessionError(sessionID, op, sqlText string, err error) {
@@ -302,6 +308,21 @@ func (m *Manager) addHistory(session *Session, sqlText, status string, duration 
 		history = history[len(history)-maxHistoryEntries:]
 	}
 	session.History = history
+	if m.historySave != nil {
+		m.historySave(session.Profile.ID, entry)
+	}
+}
+
+// SetHistoryHooks enables persisted history: save is called (with the
+// Manager lock held: it must not block or call back into the Manager, so
+// hand the entry to a writer goroutine) for every executed statement,
+// already masked; load pre-fills a new session's
+// history for its profile. nil hooks disable persistence.
+func (m *Manager) SetHistoryHooks(save func(profileID string, e HistoryEntry), load func(profileID string) []HistoryEntry) {
+	m.mu.Lock()
+	m.historySave = save
+	m.historyLoad = load
+	m.mu.Unlock()
 }
 
 func (m *Manager) CancelExecution(sessionID string) error {
@@ -311,6 +332,7 @@ func (m *Manager) CancelExecution(sessionID string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
+	session.scriptCanceled = true
 	if session.ExecCancel == nil {
 		return errors.New("no running execution")
 	}

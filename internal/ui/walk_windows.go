@@ -3,10 +3,9 @@
 package ui
 
 import (
-	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,8 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/franklinjr12/GoQueryOne/internal/app"
+	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
+	"github.com/franklinjr12/GoQueryOne/internal/core"
+	"github.com/franklinjr12/GoQueryOne/internal/export"
+	"github.com/franklinjr12/GoQueryOne/internal/history"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/securestore"
 	"github.com/lxn/walk"
@@ -35,34 +40,87 @@ type sqlEditorTab struct {
 
 type resultsTableModel struct {
 	walk.TableModelBase
+	walk.SorterBase
 	columns []string
 	rows    [][]string
+	nulls   [][]bool
+	sorter  *core.RowSorter
 }
+
+// Sort is called by walk on a header click. Rows are reordered in place
+// (shared with applicationUI.resultsRows, so copy/export follow the view);
+// the row-number column restores the original order.
+func (m *resultsTableModel) Sort(col int, order walk.SortOrder) error {
+	if m.sorter != nil && len(m.columns) > 0 {
+		m.sorter.SortByColumn(col-1, order == walk.SortDescending)
+		m.PublishRowsReset()
+	}
+	return m.SorterBase.Sort(col, order)
+}
+
+// nullDisplayText is how SQL NULL is rendered in the grid (distinct from the string "NULL").
+const nullDisplayText = "(null)"
 
 func (m *resultsTableModel) RowCount() int {
 	return len(m.rows)
 }
 
+// Value returns the cell text. Column 0 is the 1-based row number; data
+// columns start at 1. SQL NULL is rendered as nullDisplayText.
 func (m *resultsTableModel) Value(row, col int) interface{} {
 	if row < 0 || row >= len(m.rows) {
 		return ""
 	}
-	if col < 0 || col >= len(m.columns) {
+	if len(m.columns) == 0 {
+		if col == 0 && len(m.rows[row]) > 0 {
+			return m.rows[row][0]
+		}
 		return ""
 	}
-	if col >= len(m.rows[row]) {
+	if col == 0 {
+		return strconv.Itoa(row + 1)
+	}
+	col--
+	if col < 0 || col >= len(m.columns) || col >= len(m.rows[row]) {
 		return ""
+	}
+	if m.isNull(row, col) {
+		return nullDisplayText
 	}
 	return m.rows[row][col]
 }
 
-func (m *resultsTableModel) SetData(columns []string, rows [][]string) {
-	m.columns = append([]string(nil), columns...)
-	m.rows = make([][]string, len(rows))
-	for i := range rows {
-		m.rows[i] = append([]string(nil), rows[i]...)
+func (m *resultsTableModel) isNull(row, col int) bool {
+	return row >= 0 && col >= 0 && row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col]
+}
+
+// StyleCell greys out NULL cells and the row-number column.
+func (m *resultsTableModel) StyleCell(style *walk.CellStyle) {
+	if len(m.columns) == 0 {
+		return
 	}
+	row, col := style.Row(), style.Col()
+	if row < 0 || col < 0 {
+		// walk also asks for whole-row styles (col -1); nothing to do there.
+		return
+	}
+	if col == 0 {
+		style.TextColor = walk.RGB(120, 120, 120)
+		style.BackgroundColor = walk.RGB(243, 243, 243)
+		return
+	}
+	if m.isNull(row, col-1) {
+		style.TextColor = walk.RGB(150, 150, 150)
+	}
+}
+
+func (m *resultsTableModel) SetData(columns []string, rows [][]string, nulls [][]bool) {
+	m.columns = append([]string(nil), columns...)
+	m.rows = rows
+	m.nulls = nulls
+	m.sorter = core.NewRowSorter(rows, nulls)
 	m.PublishRowsReset()
+	_ = m.SorterBase.Sort(0, walk.SortAscending) // new results arrive unsorted
 }
 
 type applicationUI struct {
@@ -76,16 +134,32 @@ type applicationUI struct {
 	sessionSelect    *walk.ComboBox
 	sessionOptions   []string
 	sessionOptionMap map[string]string
-	statusLabel      *walk.Label
+
+	actions        *uiActions
+	presenter      *app.Presenter
+	activityText   string
+	executing      bool
+	executingSince time.Time
+	lastTruncated  bool
+	resultsText    *walk.TextEdit
+	textView       bool
 
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
+	splitters      []*walk.Splitter
+	historyStore   *history.Store
+	historyWriter  *history.Writer
+	lastFind       string // Edit > Find text
+	detailsGen     int    // latest table-details request (stale results are dropped)
+	// preselectProfileID makes the next connection dialog open on this profile.
+	preselectProfileID string
 
 	outputTabs     *walk.TabWidget
 	resultsTable   *walk.TableView
 	resultsModel   *resultsTableModel
 	resultsColumns []string
 	resultsRows    [][]string
+	resultsNulls   [][]bool
 	selectedRow    int
 	selectedCol    int
 	loadMoreButton *walk.PushButton
@@ -94,7 +168,8 @@ type applicationUI struct {
 	lastMaxRows    int
 
 	schemaSearchEntry *walk.LineEdit
-	schemaList        *walk.ListBox
+	schemaTree        *walk.TreeView
+	schemaSnapshot    odbc.SchemaSnapshot
 	schemaDetails     *walk.TextEdit
 	schemaTables      []odbc.SchemaTable
 	selectedSchemaID  int
@@ -139,7 +214,7 @@ func RunWithConfig(cfgPath string, cfg *config.Config) error {
 	ui := &applicationUI{
 		configPath:       cfgPath,
 		cfg:              cfg,
-		manager:          odbc.NewManager(),
+		manager:          newManager(),
 		secrets:          secrets,
 		sessionOptionMap: map[string]string{},
 		editorTabIndex:   map[*walk.TabPage]*sqlEditorTab{},
@@ -157,40 +232,46 @@ func RunWithConfig(cfgPath string, cfg *config.Config) error {
 }
 
 func (u *applicationUI) run() error {
-	width := int(u.cfg.App.Window.Width)
-	height := int(u.cfg.App.Window.Height)
-	if width <= 0 {
-		width = 1260
-	}
-	if height <= 0 {
-		height = 760
-	}
-
+	// Default size in DIPs (scaled by walk); the saved bounds are applied in
+	// pixels after creation by placeMainWindow.
 	mainWindow := declarative.MainWindow{
 		AssignTo: &u.mainWindow,
 		Title:    "GoQueryOne",
-		Bounds: declarative.Rectangle{
-			X:      int(u.cfg.App.Window.X),
-			Y:      int(u.cfg.App.Window.Y),
-			Width:  width,
-			Height: height,
-		},
-		MinSize: declarative.Size{Width: 1024, Height: 640},
-		Layout:  declarative.VBox{MarginsZero: true, Spacing: 6},
-		Visible: false,
+		Bounds:   declarative.Rectangle{Width: 1260, Height: 760},
+		MinSize:  declarative.Size{Width: 1024, Height: 640},
+		Layout:   declarative.VBox{MarginsZero: true, Spacing: 6},
+		Visible:  false,
 	}
 	if err := mainWindow.Create(); err != nil {
 		return err
 	}
 
+	if icon, err := walk.NewIconFromResource("APP"); err == nil {
+		_ = u.mainWindow.SetIcon(icon)
+	}
+	if err := u.buildActions(); err != nil {
+		return err
+	}
 	if err := u.build(); err != nil {
 		return err
 	}
-	if err := u.registerShortcuts(); err != nil {
-		return err
-	}
 	u.restoreProfiles()
-	u.mainWindow.Show()
+	u.applyHistorySetting()
+	u.restoreOpenFiles()
+	u.refreshConnectToMenu()
+	u.refreshRecentMenu()
+	u.refreshState()
+	u.placeMainWindow()
+	// Restore splitters once the window is shown and laid out.
+	u.mainWindow.Synchronize(func() {
+		for _, sp := range u.splitters {
+			_ = sp.RestoreState()
+		}
+	})
+	u.showMainWindow()
+	if tab := u.currentEditorTab(); tab != nil {
+		_ = tab.Editor.SetFocus()
+	}
 	u.mainWindow.Run()
 	return nil
 }
@@ -200,14 +281,14 @@ func (u *applicationUI) build() error {
 	if !ok {
 		return errors.New("main window layout initialization failed")
 	}
-	_ = layout.SetMargins(walk.Margins{6, 6, 6, 6})
+	_ = layout.SetMargins(walk.Margins{HNear: 6, VNear: 6, HFar: 6, VFar: 6})
 	_ = layout.SetSpacing(6)
 
 	topBar, err := u.buildTopBar()
 	if err != nil {
 		return err
 	}
-	_ = topBar.SetMinMaxSize(walk.Size{Height: 38}, walk.Size{Height: 38})
+	_ = topBar.SetMinMaxSize(walk.Size{Height: 26}, walk.Size{Height: 26})
 
 	mainSplit, err := walk.NewHSplitter(u.mainWindow)
 	if err != nil {
@@ -235,38 +316,53 @@ func (u *applicationUI) build() error {
 		return err
 	}
 
-	u.statusLabel, err = walk.NewLabel(u.mainWindow)
-	if err != nil {
-		return err
-	}
-	_ = u.statusLabel.SetText("Disconnected")
-	_ = u.statusLabel.SetMinMaxSize(walk.Size{Height: 22}, walk.Size{Height: 22})
-
 	_ = layout.SetStretchFactor(mainSplit, 1)
 
+	// Splitter positions persist in config.json through walk's state API.
+	u.mainWindow.SetName("main")
+	if client := mainSplit.Parent(); client != nil {
+		client.SetName("client")
+	}
+	mainSplit.SetName("mainSplit")
+	rightSplit.SetName("rightSplit")
+	u.splitters = []*walk.Splitter{mainSplit, rightSplit}
+	if u.cfg.App.Window.Splitters == nil {
+		u.cfg.App.Window.Splitters = map[string]string{}
+	}
+	walk.App().SetSettings(app.NewUIState(u.cfg.App.Window.Splitters, "main/"))
+
 	u.mainWindow.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		b := u.mainWindow.BoundsPixels()
-		u.cfg.App.Window.Width = float32(b.Width)
-		u.cfg.App.Window.Height = float32(b.Height)
-		u.cfg.App.Window.X = float32(b.X)
-		u.cfg.App.Window.Y = float32(b.Y)
+		if !u.confirmDiscardAll() {
+			*canceled = true
+			return
+		}
+		u.saveMainWindowPlacement()
+		u.cfg.App.OpenFiles = u.openFilePaths()
+		for _, sp := range u.splitters {
+			saveSplitterState(sp)
+		}
 		_ = config.SaveConfig(u.cfg, u.configPath)
 		u.manager.DisconnectAll()
+		u.manager.SetHistoryHooks(nil, nil)
+		if u.historyWriter != nil {
+			u.historyWriter.Close() // flush queued history entries
+		}
 	})
 
 	return nil
 }
 
-func (u *applicationUI) registerShortcuts() error {
-	runAction := walk.NewAction()
-	if err := runAction.SetText("Run"); err != nil {
-		return err
+// saveSplitterState saves a splitter's layout; a walk failure is logged and
+// must never stop the config from being saved on exit.
+func saveSplitterState(sp *walk.Splitter) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("saving splitter state: %v", r)
+		}
+	}()
+	if err := sp.SaveState(); err != nil {
+		log.Printf("saving splitter state: %v", err)
 	}
-	if err := runAction.SetShortcut(walk.Shortcut{Key: walk.KeyF5}); err != nil {
-		return err
-	}
-	runAction.Triggered().Attach(u.runStatement)
-	return u.mainWindow.ShortcutActions().Add(runAction)
 }
 
 func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
@@ -281,33 +377,11 @@ func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
 		return nil, err
 	}
 
-	connectButton, err := walk.NewPushButton(topBar)
+	sessionLabel, err := walk.NewLabel(topBar)
 	if err != nil {
 		return nil, err
 	}
-	_ = connectButton.SetText("Connect")
-	connectButton.Clicked().Attach(func() {
-		u.showConnectionWindow()
-	})
-
-	disconnectButton, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = disconnectButton.SetText("Disconnect")
-	disconnectButton.Clicked().Attach(func() {
-		active, activeErr := u.manager.ActiveSession()
-		if activeErr != nil {
-			showInfoBox(u.mainWindow, "Disconnect", "No active session.")
-			return
-		}
-		if err := u.manager.Disconnect(active.ID); err != nil {
-			showErrorBox(u.mainWindow, "Disconnect", err)
-			return
-		}
-		u.refreshSessionSelect()
-		u.updateStatus()
-	})
+	_ = sessionLabel.SetText("Active connection:")
 
 	u.sessionSelect, err = walk.NewDropDownBox(topBar)
 	if err != nil {
@@ -331,44 +405,7 @@ func (u *applicationUI) buildTopBar() (*walk.Composite, error) {
 			showErrorBox(u.mainWindow, "Session", err)
 			return
 		}
-		u.updateStatus()
-	})
-
-	odbcAdmin64, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = odbcAdmin64.SetText("ODBC Admin x64")
-	odbcAdmin64.Clicked().Attach(func() {
-		path, openErr := odbc.OpenODBCAdmin("x64")
-		if openErr != nil {
-			showErrorBox(u.mainWindow, "ODBC Admin", fmt.Errorf("%w (path: %s)", openErr, path))
-			return
-		}
-		showInfoBox(u.mainWindow, "ODBC Admin", "Opened: "+path)
-	})
-
-	odbcAdmin32, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = odbcAdmin32.SetText("ODBC Admin x86")
-	odbcAdmin32.Clicked().Attach(func() {
-		path, openErr := odbc.OpenODBCAdmin("x86")
-		if openErr != nil {
-			showErrorBox(u.mainWindow, "ODBC Admin", fmt.Errorf("%w (path: %s)", openErr, path))
-			return
-		}
-		showInfoBox(u.mainWindow, "ODBC Admin", "Opened: "+path)
-	})
-
-	aboutButton, err := walk.NewPushButton(topBar)
-	if err != nil {
-		return nil, err
-	}
-	_ = aboutButton.SetText("About")
-	aboutButton.Clicked().Attach(func() {
-		u.showAbout()
+		u.refreshState()
 	})
 
 	spacer, err := walk.NewComposite(topBar)
@@ -393,47 +430,11 @@ func (u *applicationUI) buildEditorPanel(parent walk.Container) (*walk.Composite
 		return nil, err
 	}
 
-	toolbar, err := walk.NewComposite(panel)
-	if err != nil {
-		return nil, err
-	}
-	toolbarLayout := walk.NewHBoxLayout()
-	_ = toolbarLayout.SetMargins(walk.Margins{})
-	_ = toolbarLayout.SetSpacing(6)
-	if err := toolbar.SetLayout(toolbarLayout); err != nil {
-		return nil, err
-	}
-
-	buttons := []struct {
-		label   string
-		handler func()
-	}{
-		{"New Tab", func() { u.addEditorTab("SQL", "") }},
-		{"Close Tab", u.closeCurrentTab},
-		{"Rename Tab", u.renameCurrentTab},
-		{"Open SQL", u.openSQLFile},
-		{"Save SQL", u.saveSQLFile},
-		{"Run", u.runStatement},
-		{"Run Script", u.runScript},
-		{"Cancel", u.cancelExecution},
-		{"Begin Tx", func() { u.transactionAction("begin") }},
-		{"Commit", func() { u.transactionAction("commit") }},
-		{"Rollback", func() { u.transactionAction("rollback") }},
-	}
-
-	for _, item := range buttons {
-		btn, newErr := walk.NewPushButton(toolbar)
-		if newErr != nil {
-			return nil, newErr
-		}
-		_ = btn.SetText(item.label)
-		btn.Clicked().Attach(item.handler)
-	}
-
 	u.editorTabs, err = walk.NewTabWidget(panel)
 	if err != nil {
 		return nil, err
 	}
+	u.editorTabs.CurrentIndexChanged().Attach(u.refreshState)
 	_ = panelLayout.SetStretchFactor(u.editorTabs, 1)
 
 	u.addEditorTab("SQL 1", "")
@@ -471,6 +472,11 @@ func (u *applicationUI) addEditorTab(baseTitle, content string) {
 	}
 	_ = editor.SetText(content)
 	_ = layout.SetStretchFactor(editor, 1)
+	if font := monoFont(app.EditorFontSize(*u.cfg)); font != nil {
+		editor.SetFont(font)
+	}
+	editor.KeyUp().Attach(func(walk.Key) { u.refreshState() })
+	editor.MouseUp().Attach(func(int, int, walk.MouseButton) { u.refreshState() })
 
 	tab := &sqlEditorTab{Page: page, Editor: editor, Title: title}
 	u.editorTabIndex[page] = tab
@@ -499,6 +505,7 @@ func (u *applicationUI) refreshTabTitle(tab *sqlEditorTab) {
 		title += " *"
 	}
 	_ = tab.Page.SetTitle(title)
+	u.refreshState()
 }
 
 func (u *applicationUI) currentEditorTab() *sqlEditorTab {
@@ -524,6 +531,9 @@ func (u *applicationUI) closeCurrentTab() {
 	page := pages.At(idx)
 	tab := u.editorTabIndex[page]
 	if tab == nil {
+		return
+	}
+	if !u.confirmDiscard(tab) {
 		return
 	}
 
@@ -581,58 +591,56 @@ func (u *applicationUI) openSQLFile() {
 		return
 	}
 
-	raw, err := os.ReadFile(dlg.FilePath)
-	if err != nil {
+	if err := u.openSQLPath(dlg.FilePath); err != nil {
 		showErrorBox(u.mainWindow, "Open SQL", err)
 		return
 	}
+	u.noteRecentFile(dlg.FilePath)
+}
 
-	name := filepath.Base(dlg.FilePath)
+// openSQLPath opens a SQL file in a new editor tab.
+func (u *applicationUI) openSQLPath(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(path)
 	u.addEditorTab(name, string(raw))
 	tab := u.currentEditorTab()
 	if tab != nil {
-		tab.FilePath = dlg.FilePath
+		tab.FilePath = path
 		tab.Title = name
 		tab.Dirty = false
 		u.refreshTabTitle(tab)
 	}
+	return nil
 }
 
-func (u *applicationUI) saveSQLFile() {
-	tab := u.currentEditorTab()
-	if tab == nil {
-		return
+// openFilePaths lists the file-backed editor tabs in tab order.
+func (u *applicationUI) openFilePaths() []string {
+	var out []string
+	pages := u.editorTabs.Pages()
+	for i := 0; i < pages.Len(); i++ {
+		if tab := u.editorTabIndex[pages.At(i)]; tab != nil && tab.FilePath != "" {
+			out = append(out, tab.FilePath)
+		}
 	}
-
-	dlg := walk.FileDialog{
-		Title:       "Save SQL",
-		FilePath:    tab.FilePath,
-		Filter:      "SQL Files (*.sql;*.txt)|*.sql;*.txt|All Files (*.*)|*.*",
-		FilterIndex: 1,
-	}
-	if strings.TrimSpace(dlg.FilePath) == "" {
-		dlg.FilePath = "query.sql"
-	}
-
-	accepted, err := dlg.ShowSave(u.mainWindow)
-	if err != nil {
-		showErrorBox(u.mainWindow, "Save SQL", err)
-		return
-	}
-	if !accepted {
-		return
-	}
-
-	if err := os.WriteFile(dlg.FilePath, []byte(tab.Editor.Text()), 0o644); err != nil {
-		showErrorBox(u.mainWindow, "Save SQL", err)
-		return
-	}
-
-	tab.FilePath = dlg.FilePath
-	tab.Title = filepath.Base(dlg.FilePath)
-	tab.Dirty = false
-	u.refreshTabTitle(tab)
+	return out
 }
+
+// restoreOpenFiles reopens the SQL files that were open at the last exit.
+func (u *applicationUI) restoreOpenFiles() {
+	exists := func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir()
+	}
+	for _, p := range app.FilesToRestore(u.cfg.App.OpenFiles, exists) {
+		if err := u.openSQLPath(p); err != nil {
+			u.appendMessage("Could not reopen " + p + ": " + err.Error())
+		}
+	}
+}
+
 func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite, error) {
 	panel, err := walk.NewComposite(parent)
 	if err != nil {
@@ -682,37 +690,18 @@ func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite
 		return nil, err
 	}
 
-	loadBtn, err := walk.NewPushButton(buttonRow)
-	if err != nil {
-		return nil, err
-	}
-	_ = loadBtn.SetText("Load")
-	loadBtn.Clicked().Attach(func() {
-		u.loadSchema(false)
-	})
-
 	refreshBtn, err := walk.NewPushButton(buttonRow)
 	if err != nil {
 		return nil, err
 	}
-	_ = refreshBtn.SetText("Refresh")
+	_ = refreshBtn.SetText("Refresh schema (F8)")
 	refreshBtn.Clicked().Attach(func() {
 		u.loadSchema(true)
 	})
 
-	u.schemaList, err = walk.NewListBox(topSection)
-	if err != nil {
+	if err := u.buildSchemaTree(topSection, topLayout); err != nil {
 		return nil, err
 	}
-	_ = topLayout.SetStretchFactor(u.schemaList, 1)
-	_ = u.schemaList.SetModel([]string{})
-	u.schemaList.CurrentIndexChanged().Attach(func() {
-		idx := u.schemaList.CurrentIndex()
-		u.selectedSchemaID = idx
-		if idx >= 0 && idx < len(u.schemaTables) {
-			u.showTableDetails(u.schemaTables[idx])
-		}
-	})
 
 	actionsRow1, err := walk.NewComposite(topSection)
 	if err != nil {
@@ -773,7 +762,7 @@ func (u *applicationUI) buildSchemaPanel(parent walk.Container) (*walk.Composite
 		if selected == nil {
 			return
 		}
-		_ = walk.Clipboard().SetText(qualifiedName(*selected))
+		_ = walk.Clipboard().SetText(u.sqlName(*selected))
 	})
 
 	u.schemaDetails, err = walk.NewTextEdit(split)
@@ -825,100 +814,67 @@ func (u *applicationUI) buildResultsPanel(parent walk.Container) (*walk.Composit
 		return nil, err
 	}
 
-	toolbar, err := walk.NewComposite(resultsPage)
+	loadMoreBar, err := walk.NewComposite(resultsPage)
 	if err != nil {
 		return nil, err
 	}
-	toolbarLayout := walk.NewHBoxLayout()
-	_ = toolbarLayout.SetMargins(walk.Margins{})
-	_ = toolbarLayout.SetSpacing(6)
-	if err := toolbar.SetLayout(toolbarLayout); err != nil {
+	loadMoreLayout := walk.NewHBoxLayout()
+	_ = loadMoreLayout.SetMargins(walk.Margins{})
+	if err := loadMoreBar.SetLayout(loadMoreLayout); err != nil {
 		return nil, err
 	}
-
-	copySelectedBtn, err := walk.NewPushButton(toolbar)
+	u.loadMoreButton, err = walk.NewPushButton(loadMoreBar)
 	if err != nil {
 		return nil, err
 	}
-	_ = copySelectedBtn.SetText("Copy Selection")
-	copySelectedBtn.Clicked().Attach(func() {
-		u.copySelectedCell()
-	})
-
-	copyAllBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyAllBtn.SetText("Copy All TSV")
-	copyAllBtn.Clicked().Attach(func() {
-		u.copyAllRows("\t")
-	})
-
-	copyCSVBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyCSVBtn.SetText("Copy All CSV")
-	copyCSVBtn.Clicked().Attach(func() {
-		u.copyAllRows(",")
-	})
-
-	exportBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = exportBtn.SetText("Export")
-	exportBtn.Clicked().Attach(func() {
-		u.exportResults()
-	})
-
-	toggleOutputBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = toggleOutputBtn.SetText("Toggle Text")
-	toggleOutputBtn.Clicked().Attach(func() {
-		u.outputEnabled = !u.outputEnabled
-		if u.outputEnabled {
-			u.appendMessage("Text output enabled.")
-		} else {
-			u.appendMessage("Text output disabled.")
-		}
-	})
-
-	copyErrorBtn, err := walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = copyErrorBtn.SetText("Copy Error")
-	copyErrorBtn.Clicked().Attach(func() {
-		_ = walk.Clipboard().SetText(u.errorsEntry.Text())
-	})
-
-	u.loadMoreButton, err = walk.NewPushButton(toolbar)
-	if err != nil {
-		return nil, err
-	}
-	_ = u.loadMoreButton.SetText("Load More")
+	_ = u.loadMoreButton.SetText("Result truncated - Load more rows")
 	u.loadMoreButton.Clicked().Attach(func() {
 		u.loadMoreRows()
 	})
+	_, _ = walk.NewHSpacer(loadMoreBar)
 	u.loadMoreButton.SetVisible(false)
 
 	u.resultsTable, err = walk.NewTableView(resultsPage)
 	if err != nil {
 		return nil, err
 	}
+	// Columns change with every query, so walk must not save/restore the
+	// grid's column state with the splitters. (walk's TableView.SaveState
+	// also panics when a sortable model has no sorted column yet.)
+	u.resultsTable.SetPersistent(false)
 	if err := u.resultsTable.SetModel(u.resultsModel); err != nil {
 		return nil, err
 	}
-	_ = u.resultsTable.SetLastColumnStretched(true)
-	_ = u.resultsTable.SetMultiSelection(false)
+	_ = u.resultsTable.SetLastColumnStretched(false)
+	_ = u.resultsTable.SetMultiSelection(true)
+	u.resultsTable.SetAlternatingRowBG(true)
+	u.resultsTable.SetCellStyler(u.resultsModel)
 	u.resultsTable.CurrentIndexChanged().Attach(func() {
 		u.selectedRow = u.resultsTable.CurrentIndex()
 		u.selectedCol = 0
 	})
+	u.resultsTable.SelectedIndexesChanged().Attach(u.refreshState)
+	u.resultsTable.KeyDown().Attach(func(key walk.Key) {
+		if key == walk.KeyC && walk.ModifiersDown() == walk.ModControl {
+			u.copySelectedRows(false)
+		}
+		if key == walk.KeyA && walk.ModifiersDown() == walk.ModControl {
+			_ = u.resultsTable.SetSelectedIndexes(allIndexes(len(u.resultsRows)))
+		}
+	})
 	_ = resultsLayout.SetStretchFactor(u.resultsTable, 1)
+
+	u.resultsText, err = walk.NewTextEdit(resultsPage)
+	if err != nil {
+		return nil, err
+	}
+	_ = u.resultsText.SetReadOnly(true)
+	if font := monoFont(9); font != nil {
+		u.resultsText.SetFont(font)
+	}
+	u.resultsText.SetVisible(false)
+	_ = resultsLayout.SetStretchFactor(u.resultsText, 1)
+	u.preventSelectAllOnFocus(u.resultsText)
 
 	u.rebuildResultsColumns()
 
@@ -978,6 +934,7 @@ func (u *applicationUI) newReadOnlyTextPage(page *walk.TabPage) (*walk.TextEdit,
 	}
 	_ = entry.SetReadOnly(true)
 	_ = layout.SetStretchFactor(entry, 1)
+	u.preventSelectAllOnFocus(entry)
 	return entry, nil
 }
 
@@ -994,12 +951,212 @@ func (u *applicationUI) rebuildResultsColumns() {
 		_ = cols.Add(col)
 		return
 	}
-	for _, name := range u.resultsColumns {
+	numCol := walk.NewTableViewColumn()
+	_ = numCol.SetTitle("#")
+	_ = numCol.SetAlignment(walk.AlignFar)
+	numCol.SetWidth(columnWidthPx(len(strconv.Itoa(len(u.resultsRows))) + 1))
+	_ = cols.Add(numCol)
+	for i, name := range u.resultsColumns {
 		col := walk.NewTableViewColumn()
 		_ = col.SetTitle(name)
-		col.SetWidth(140)
+		if isNumericColumn(u.resultsRows, u.resultsNulls, i) {
+			_ = col.SetAlignment(walk.AlignFar)
+		}
+		col.SetWidth(columnWidthPx(columnChars(name, u.resultsRows, i)) + sortArrowPx)
 		_ = cols.Add(col)
 	}
+}
+
+const autoWidthSampleRows = 200
+
+// columnChars returns the widest display length (runes) of the header and
+// the first autoWidthSampleRows values of column col.
+func columnChars(header string, rows [][]string, col int) int {
+	n := utf8.RuneCountInString(header)
+	if n < len(nullDisplayText) {
+		n = len(nullDisplayText)
+	}
+	for r := 0; r < len(rows) && r < autoWidthSampleRows; r++ {
+		if col < len(rows[r]) {
+			if l := utf8.RuneCountInString(rows[r][col]); l > n {
+				n = l
+			}
+		}
+	}
+	return n
+}
+
+// sortArrowPx is extra header room for the sort arrow so short names are not cut.
+const sortArrowPx = 16
+
+// columnWidthPx converts a character count to a capped pixel width.
+func columnWidthPx(chars int) int {
+	w := chars*7 + 18
+	if w < 40 {
+		w = 40
+	}
+	if w > 400 {
+		w = 400
+	}
+	return w
+}
+
+// isNumericColumn reports whether every non-NULL sampled value parses as a number.
+func isNumericColumn(rows [][]string, nulls [][]bool, col int) bool {
+	seen := false
+	for r := 0; r < len(rows) && r < autoWidthSampleRows; r++ {
+		if col >= len(rows[r]) {
+			continue
+		}
+		if r < len(nulls) && col < len(nulls[r]) && nulls[r][col] {
+			continue
+		}
+		v := strings.TrimSpace(rows[r][col])
+		if v == "" {
+			return false
+		}
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+func allIndexes(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+// preventSelectAllOnFocus stops read-only boxes from highlighting their
+// whole content when they receive focus.
+func (u *applicationUI) preventSelectAllOnFocus(te *walk.TextEdit) {
+	te.FocusedChanged().Attach(func() {
+		if te.Focused() {
+			start, end := te.TextSelection()
+			if end-start == te.TextLength() && end > 0 {
+				te.SetTextSelection(end, end)
+			}
+		}
+	})
+}
+
+// copySelectedRows copies the selected grid rows as Excel-ready TSV.
+func (u *applicationUI) copySelectedRows(withHeaders bool) {
+	if len(u.resultsColumns) == 0 || u.resultsTable == nil {
+		return
+	}
+	idx := u.resultsTable.SelectedIndexes()
+	if len(idx) == 0 {
+		if cur := u.resultsTable.CurrentIndex(); cur >= 0 {
+			idx = []int{cur}
+		} else {
+			return
+		}
+	}
+	_ = walk.Clipboard().SetText(export.TSVString(export.SelectRows(u.currentTable(), idx), withHeaders))
+	u.setActivity(fmt.Sprintf("Copied %d row(s)", len(idx)))
+	u.activityText = ""
+}
+
+// toggleTextView switches the Results tab between the grid and an aligned
+// plain-text rendering (F9, like ODBC Query Tool).
+func (u *applicationUI) toggleTextView() {
+	u.textView = !u.textView
+	u.renderResultView()
+	if u.outputTabs != nil {
+		_ = u.outputTabs.SetCurrentIndex(0)
+	}
+}
+
+func (u *applicationUI) renderResultView() {
+	if u.resultsTable == nil || u.resultsText == nil {
+		return
+	}
+	if u.textView {
+		_ = u.resultsText.SetText(strings.ReplaceAll(export.TextString(u.currentTable(), export.TextOptions{}), "\n", "\r\n"))
+	}
+	u.resultsText.SetVisible(u.textView)
+	u.resultsTable.SetVisible(!u.textView)
+}
+
+// saveTab writes the tab to its file; asks for a path when it has none or
+// when asNew (Save As). Returns false if the user canceled or saving failed.
+func (u *applicationUI) saveTab(tab *sqlEditorTab, asNew bool) bool {
+	if tab == nil {
+		return false
+	}
+	path := tab.FilePath
+	if asNew || strings.TrimSpace(path) == "" {
+		dlg := walk.FileDialog{
+			Title:       "Save SQL",
+			FilePath:    tab.FilePath,
+			Filter:      "SQL Files (*.sql;*.txt)|*.sql;*.txt|All Files (*.*)|*.*",
+			FilterIndex: 1,
+		}
+		if strings.TrimSpace(dlg.FilePath) == "" {
+			dlg.FilePath = strings.TrimSuffix(tab.Title, " *") + ".sql"
+		}
+		accepted, err := dlg.ShowSave(u.mainWindow)
+		if err != nil {
+			showErrorBox(u.mainWindow, "Save SQL", err)
+			return false
+		}
+		if !accepted {
+			return false
+		}
+		path = dlg.FilePath
+		if filepath.Ext(path) == "" {
+			path += ".sql"
+		}
+	}
+	if err := os.WriteFile(path, []byte(tab.Editor.Text()), 0o644); err != nil {
+		showErrorBox(u.mainWindow, "Save SQL", err)
+		return false
+	}
+	tab.FilePath = path
+	tab.Title = filepath.Base(path)
+	tab.Dirty = false
+	u.refreshTabTitle(tab)
+	u.noteRecentFile(path)
+	return true
+}
+
+// confirmDiscard asks Save / Don't save / Cancel for a dirty tab. Returns
+// true when it is OK to close the tab.
+func (u *applicationUI) confirmDiscard(tab *sqlEditorTab) bool {
+	if tab == nil || !tab.Dirty {
+		return true
+	}
+	if u.editorTabs != nil && tab.Page != nil {
+		if idx := u.editorTabs.Pages().Index(tab.Page); idx >= 0 {
+			_ = u.editorTabs.SetCurrentIndex(idx)
+		}
+	}
+	switch walk.MsgBox(u.mainWindow, "Unsaved changes", "Save changes to \""+tab.Title+"\"?", walk.MsgBoxYesNoCancel|walk.MsgBoxIconQuestion) {
+	case walk.DlgCmdYes:
+		return u.saveTab(tab, false)
+	case walk.DlgCmdNo:
+		return true
+	default:
+		return false
+	}
+}
+
+func (u *applicationUI) confirmDiscardAll() bool {
+	if u.editorTabs == nil {
+		return true
+	}
+	pages := u.editorTabs.Pages()
+	for i := 0; i < pages.Len(); i++ {
+		if !u.confirmDiscard(u.editorTabIndex[pages.At(i)]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (u *applicationUI) transactionAction(action string) {
@@ -1037,7 +1194,15 @@ func (u *applicationUI) runStatement() {
 
 	sqlText := strings.TrimSpace(selectedText(tab.Editor))
 	if sqlText == "" {
-		sqlText = strings.TrimSpace(tab.Editor.Text())
+		// No selection: run the statement under the caret (like ODBC Query Tool)
+		// and select it so the user sees exactly what was executed.
+		text := tab.Editor.Text()
+		caret, _ := tab.Editor.TextSelection()
+		stmt, start, end, ok := core.StatementAt(text, core.UTF16OffsetToByteOffset(text, caret))
+		if ok {
+			sqlText = strings.TrimSpace(stmt)
+			tab.Editor.SetTextSelection(core.ByteOffsetToUTF16Offset(text, start), core.ByteOffsetToUTF16Offset(text, end))
+		}
 	}
 	if sqlText == "" {
 		showInfoBox(u.mainWindow, "Run", "No SQL to execute.")
@@ -1046,7 +1211,7 @@ func (u *applicationUI) runStatement() {
 
 	paramCount := odbc.CountPositionalParams(sqlText)
 	run := func(params []any) {
-		_ = u.statusLabel.SetText("Executing...")
+		u.beginExecuting("Executing…")
 		u.lastQuerySQL = sqlText
 		u.lastQueryArgs = params
 		u.lastMaxRows = u.cfg.Query.DefaultMaxRows
@@ -1059,6 +1224,13 @@ func (u *applicationUI) runStatement() {
 			u.runOnMain(func() {
 				if runErr != nil {
 					u.showDiagnostic(runErr, res)
+				} else if u.outputTabs != nil {
+					// Auto-switch: rows -> Results, commands -> Messages.
+					if res.HasRows {
+						_ = u.outputTabs.SetCurrentIndex(0)
+					} else {
+						_ = u.outputTabs.SetCurrentIndex(1)
+					}
 				}
 				u.applyStatementResult(res)
 				u.updateHistory()
@@ -1090,7 +1262,7 @@ func (u *applicationUI) runScript() {
 		return
 	}
 
-	_ = u.statusLabel.SetText("Executing script...")
+	u.beginExecuting("Executing script…")
 	go func() {
 		res, runErr := u.manager.ExecuteScript(session.ID, sqlText, odbc.ScriptOptions{
 			Timeout:   time.Duration(u.cfg.Query.DefaultTimeoutMs) * time.Millisecond,
@@ -1112,10 +1284,13 @@ func (u *applicationUI) runScript() {
 				} else if item.TimedOut {
 					status = "timeout"
 				}
-				b.WriteString(fmt.Sprintf("%d. %s (%v)\n", i+1, status, item.ExecutionTime))
-				if item.HasRows {
+				b.WriteString(fmt.Sprintf("%d. %s (%s)\n", i+1, status, core.FormatDuration(item.ExecutionTime)))
+				switch {
+				case item.ErrorMessage != "":
+					b.WriteString("   " + odbc.MaskSecrets(item.ErrorMessage) + "\n")
+				case item.HasRows:
 					b.WriteString(fmt.Sprintf("   rows: %d\n", item.ResultSet.RowCount))
-				} else {
+				case item.RowsAffected >= 0:
 					b.WriteString(fmt.Sprintf("   rows affected: %d\n", item.RowsAffected))
 				}
 			}
@@ -1148,33 +1323,39 @@ func (u *applicationUI) cancelExecution() {
 }
 
 func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
+	if res.ErrorMessage != "" {
+		// Failures are reported in the Errors tab; never print a fake "completed" line.
+		o := outcomeOf(res)
+		o.Err = odbc.MaskSecrets(o.Err)
+		u.appendMessage(app.MessageFor(*o))
+		return
+	}
 	if res.HasRows {
 		u.resultsColumns = make([]string, len(res.ResultSet.Columns))
 		for i, c := range res.ResultSet.Columns {
 			u.resultsColumns[i] = c.Name
 		}
 		u.resultsRows = res.ResultSet.Rows
+		u.resultsNulls = res.ResultSet.Nulls
 		u.rebuildResultsColumns()
-		u.resultsModel.SetData(u.resultsColumns, u.resultsRows)
-		if res.ResultSet.Truncated {
-			u.loadMoreButton.SetVisible(true)
-			u.appendMessage(fmt.Sprintf("Result truncated at %d rows.", res.ResultSet.TruncatedAt))
-		} else {
-			u.loadMoreButton.SetVisible(false)
-		}
-		u.appendMessage(fmt.Sprintf("Query completed in %v. Rows: %d, Cols: %d", res.ExecutionTime, res.ResultSet.RowCount, len(res.ResultSet.Columns)))
+		u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
+		u.lastTruncated = res.ResultSet.Truncated
+		u.renderResultView()
+		u.appendMessage(app.MessageFor(*outcomeOf(res)))
 		if u.outputEnabled {
-			u.appendMessage(FormatResultAsCSVLike(&res))
+			u.appendMessage(export.TextString(u.currentTable(), export.TextOptions{}))
 		}
 		return
 	}
 
 	u.resultsColumns = []string{}
 	u.resultsRows = [][]string{}
+	u.resultsNulls = nil
+	u.lastTruncated = false
 	u.rebuildResultsColumns()
-	u.resultsModel.SetData(u.resultsColumns, u.resultsRows)
-	u.loadMoreButton.SetVisible(false)
-	u.appendMessage(fmt.Sprintf("Command completed in %v. Rows affected: %d", res.ExecutionTime, res.RowsAffected))
+	u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
+	u.renderResultView()
+	u.appendMessage(app.MessageFor(*outcomeOf(res)))
 }
 
 func (u *applicationUI) showDiagnostic(err error, res odbc.StatementResult) {
@@ -1204,14 +1385,14 @@ func (u *applicationUI) showErrorsTab() {
 }
 
 func (u *applicationUI) updateHistory() {
-	session, err := u.manager.ActiveSession()
-	if err != nil {
+	session, ok := u.manager.ActiveView()
+	if !ok {
 		_ = u.historyEntry.SetText("")
 		return
 	}
 	var b strings.Builder
 	for _, item := range session.History {
-		b.WriteString(fmt.Sprintf("%s [%s] %v\r\n%s\r\n", item.When.Format(time.RFC3339), item.Status, item.Duration, item.SQL))
+		b.WriteString(fmt.Sprintf("%s [%s] %s\r\n%s\r\n", item.When.Format("2006-01-02 15:04:05"), item.Status, core.FormatDuration(item.Duration), item.SQL))
 	}
 	_ = u.historyEntry.SetText(strings.TrimSpace(b.String()))
 }
@@ -1233,7 +1414,7 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 		return
 	}
 
-	_ = u.statusLabel.SetText("Loading schema...")
+	u.setActivity("Loading schema…")
 	search := strings.TrimSpace(u.schemaSearchEntry.Text())
 
 	go func() {
@@ -1244,17 +1425,17 @@ func (u *applicationUI) loadSchema(forceRefresh bool) {
 		} else {
 			snapshot, loadErr = u.manager.LoadSchema(session.ID, search)
 		}
+		// SQLGetInfo: DBMS/driver for About, the schema tree and the limit syntax.
+		if _, err := u.manager.DBInfo(session.ID); err != nil {
+			log.Printf("database info unavailable: %v", err)
+		}
 		u.runOnMain(func() {
 			if loadErr != nil {
 				showErrorBox(u.mainWindow, "Schema", loadErr)
 				u.updateStatus()
 				return
 			}
-			u.schemaTables = snapshot.Tables
-			sort.Slice(u.schemaTables, func(i, j int) bool {
-				return strings.ToLower(qualifiedName(u.schemaTables[i])) < strings.ToLower(qualifiedName(u.schemaTables[j]))
-			})
-			u.refreshSchemaWidget()
+			u.setSchemaSnapshot(snapshot)
 			u.appendMessage(fmt.Sprintf("Schema loaded. %d tables/views.", len(u.schemaTables)))
 			u.updateStatus()
 		})
@@ -1270,28 +1451,7 @@ func (u *applicationUI) refreshSchemaList() {
 	if loadErr != nil {
 		return
 	}
-	u.schemaTables = snapshot.Tables
-	sort.Slice(u.schemaTables, func(i, j int) bool {
-		return strings.ToLower(qualifiedName(u.schemaTables[i])) < strings.ToLower(qualifiedName(u.schemaTables[j]))
-	})
-	u.refreshSchemaWidget()
-}
-
-func (u *applicationUI) refreshSchemaWidget() {
-	options := make([]string, 0, len(u.schemaTables))
-	for _, table := range u.schemaTables {
-		if table.Schema != "" {
-			options = append(options, table.Schema+"."+table.Name+" ["+table.Type+"]")
-		} else {
-			options = append(options, table.Name+" ["+table.Type+"]")
-		}
-	}
-	_ = u.schemaList.SetModel(options)
-	u.selectedSchemaID = -1
-	_ = u.schemaDetails.SetText("")
-	if len(options) > 0 {
-		_ = u.schemaList.SetCurrentIndex(0)
-	}
+	u.setSchemaSnapshot(snapshot)
 }
 
 func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
@@ -1299,13 +1459,19 @@ func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
 	if err != nil {
 		return
 	}
+	u.detailsGen++
+	gen := u.detailsGen
 	go func() {
 		details, detailsErr := u.manager.TableDetails(session.ID, table.Catalog, table.Schema, table.Name)
 		u.runOnMain(func() {
+			if gen != u.detailsGen {
+				return // the user selected another table meanwhile
+			}
 			if detailsErr != nil {
 				_ = u.schemaDetails.SetText(detailsErr.Error())
 				return
 			}
+			u.addLazyColumns(table, details.Columns)
 			var b strings.Builder
 			b.WriteString("Columns:\n")
 			for _, c := range details.Columns {
@@ -1362,28 +1528,51 @@ func (u *applicationUI) generateQuickQuery(mode string) {
 		return
 	}
 
-	name := qualifiedName(*selected)
+	name := u.sqlName(*selected)
 	query := "SELECT * FROM " + name + ";"
 	switch mode {
 	case "count":
 		query = "SELECT COUNT(*) AS row_count FROM " + name + ";"
 	case "top":
-		limitSyntax := "TOP"
-		if session, err := u.manager.ActiveSession(); err == nil && session.Profile.Options.LimitSyntax != "" {
-			limitSyntax = strings.ToUpper(session.Profile.Options.LimitSyntax)
-		}
-		if limitSyntax == "LIMIT" {
-			query = "SELECT * FROM " + name + " LIMIT 100;"
-		} else {
-			query = "SELECT TOP 100 * FROM " + name + ";"
-		}
+		query = core.SelectTop(u.limitSyntax(), name, 100)
 	}
 
+	// Append instead of replacing the editor contents (the old behaviour threw
+	// away whatever the user had typed), then select the new statement.
+	text, start, end := core.AppendStatement(tab.Editor.Text(), query)
 	tab.suppressDirty = true
-	_ = tab.Editor.SetText(query)
+	_ = tab.Editor.SetText(text)
 	tab.suppressDirty = false
+	tab.Editor.SetTextSelection(core.ByteOffsetToUTF16Offset(text, start), core.ByteOffsetToUTF16Offset(text, end))
+	_ = tab.Editor.SetFocus()
 	tab.Dirty = true
 	u.refreshTabTitle(tab)
+	u.refreshState()
+}
+
+// limitSyntax returns the row-limit syntax for the active connection: an
+// explicit LIMIT/FETCH/FIRST from the profile wins; otherwise (empty, "auto",
+// or the old hard-coded "TOP" default) it is guessed from the driver name,
+// the connection string and the DSN's registered driver.
+func (u *applicationUI) limitSyntax() string {
+	session, err := u.manager.ActiveSession()
+	if err != nil {
+		return core.LimitTop
+	}
+	p := session.Profile
+	if s := core.NormalizeLimitSyntax(p.Options.LimitSyntax); s != "" && s != core.LimitTop {
+		return s
+	}
+	var hints []string
+	if info, infoErr := u.manager.DBInfo(session.ID); infoErr == nil {
+		hints = append(hints, info.DBMSName, info.DriverName) // SQLGetInfo: the most reliable hint
+	}
+	hints = append(hints, p.Driver, p.ConnectionString)
+	if p.DSN != "" {
+		hints = append(hints, dsnDriver(p.DSN))
+		hints = append(hints, p.DSN)
+	}
+	return core.DetectLimitSyntax(hints...)
 }
 
 func (u *applicationUI) loadMoreRows() {
@@ -1394,9 +1583,15 @@ func (u *applicationUI) loadMoreRows() {
 	if strings.TrimSpace(u.lastQuerySQL) == "" {
 		return
 	}
+	if !odbc.IsQueryStatement(u.lastQuerySQL) {
+		// Never re-run DML/DDL just to page results.
+		showInfoBox(u.mainWindow, "Load More", "Load More is only available for queries that return rows.")
+		return
+	}
 
 	u.lastMaxRows += u.cfg.Query.FetchPageSize
-	_ = u.statusLabel.SetText("Loading more...")
+	u.appendMessage("Query re-executed to load more rows (max " + strconv.Itoa(u.lastMaxRows) + ").")
+	u.beginExecuting("Loading more rows…")
 
 	go func() {
 		res, runErr := u.manager.ExecuteStatement(session.ID, u.lastQuerySQL, u.lastQueryArgs, odbc.QueryOptions{
@@ -1438,16 +1633,21 @@ func (u *applicationUI) copyAllRows(delimiter string) {
 	if len(u.resultsColumns) == 0 {
 		return
 	}
-	lines := make([]string, 0, len(u.resultsRows)+1)
-	lines = append(lines, strings.Join(u.resultsColumns, delimiter))
-	for _, row := range u.resultsRows {
-		clean := make([]string, len(row))
-		for i, col := range row {
-			clean[i] = strings.ReplaceAll(strings.ReplaceAll(col, "\r", " "), "\n", " ")
-		}
-		lines = append(lines, strings.Join(clean, delimiter))
+	var text string
+	if delimiter == "," {
+		var b strings.Builder
+		_ = export.WriteCSV(&b, u.currentTable(), export.CSVOptions{Header: true, CRLF: true})
+		text = b.String()
+	} else {
+		text = export.TSVString(u.currentTable(), true)
 	}
-	_ = walk.Clipboard().SetText(strings.Join(lines, "\n"))
+	_ = walk.Clipboard().SetText(text)
+}
+
+// currentTable converts the displayed result set into the export model
+// (NULLs stay distinct from empty strings and from the text "NULL").
+func (u *applicationUI) currentTable() export.Table {
+	return export.Table{Columns: u.resultsColumns, Rows: u.resultsRows, Nulls: u.resultsNulls}
 }
 
 func (u *applicationUI) exportResults() {
@@ -1459,7 +1659,7 @@ func (u *applicationUI) exportResults() {
 	dlg := walk.FileDialog{
 		Title:       "Export Results",
 		FilePath:    "result.csv",
-		Filter:      "CSV (*.csv)|*.csv|TSV (*.tsv)|*.tsv|JSON (*.json)|*.json",
+		Filter:      "CSV (*.csv)|*.csv|TSV (*.tsv)|*.tsv|JSON (*.json)|*.json|Markdown (*.md)|*.md|Text (*.txt)|*.txt",
 		FilterIndex: 1,
 	}
 	accepted, err := dlg.ShowSave(u.mainWindow)
@@ -1471,57 +1671,26 @@ func (u *applicationUI) exportResults() {
 		return
 	}
 
+	format, ok := export.ByExtension(dlg.FilePath)
+	if !ok {
+		format = export.CSV
+		if !strings.Contains(filepath.Base(dlg.FilePath), ".") {
+			dlg.FilePath += ".csv"
+		}
+	}
 	file, err := os.Create(dlg.FilePath)
 	if err != nil {
 		showErrorBox(u.mainWindow, "Export", err)
 		return
 	}
-	defer file.Close()
-
-	ext := strings.ToLower(filepath.Ext(dlg.FilePath))
-	switch ext {
-	case ".json":
-		rows := make([]map[string]string, 0, len(u.resultsRows))
-		for _, row := range u.resultsRows {
-			item := map[string]string{}
-			for i := range u.resultsColumns {
-				if i < len(row) {
-					item[u.resultsColumns[i]] = row[i]
-				} else {
-					item[u.resultsColumns[i]] = ""
-				}
-			}
-			rows = append(rows, item)
-		}
-		enc := json.NewEncoder(file)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rows); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
-	case ".tsv":
-		writer := csv.NewWriter(file)
-		writer.Comma = '\t'
-		_ = writer.Write(u.resultsColumns)
-		for _, row := range u.resultsRows {
-			_ = writer.Write(row)
-		}
-		writer.Flush()
-		if err := writer.Error(); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
-	default:
-		writer := csv.NewWriter(file)
-		_ = writer.Write(u.resultsColumns)
-		for _, row := range u.resultsRows {
-			_ = writer.Write(row)
-		}
-		writer.Flush()
-		if err := writer.Error(); err != nil {
-			showErrorBox(u.mainWindow, "Export", err)
-			return
-		}
+	writeErr := export.Write(file, u.currentTable(), format)
+	closeErr := file.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		showErrorBox(u.mainWindow, "Export", writeErr)
+		return
 	}
 
 	u.appendMessage("Export completed: " + dlg.FilePath)
@@ -1533,11 +1702,12 @@ func (u *applicationUI) showConnectionWindow() {
 		showErrorBox(u.mainWindow, "Connection", err)
 		return
 	}
-	_ = dlg.SetTitle("Connection")
+	// The bitness decides which ODBC drivers/DSNs are visible.
+	_ = dlg.SetTitle("Connection - " + buildinfo.Arch() + " build: uses " + bitnessWord() + " ODBC drivers and DSNs")
 	_ = dlg.SetMinMaxSize(walk.Size{Width: 980, Height: 460}, walk.Size{})
 
 	layout := walk.NewGridLayout()
-	_ = layout.SetMargins(walk.Margins{10, 10, 10, 10})
+	_ = layout.SetMargins(walk.Margins{HNear: 10, VNear: 10, HFar: 10, VFar: 10})
 	_ = layout.SetSpacing(8)
 	_ = layout.SetColumnStretchFactor(1, 1)
 	_ = layout.SetColumnStretchFactor(2, 1)
@@ -1552,7 +1722,20 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = layout.SetRange(profileLabel, walk.Rectangle{X: 0, Y: 0, Width: 1, Height: 1})
 
 	profileSelect, _ := walk.NewDropDownBox(dlg)
-	_ = layout.SetRange(profileSelect, walk.Rectangle{X: 1, Y: 0, Width: 3, Height: 1})
+	_ = layout.SetRange(profileSelect, walk.Rectangle{X: 1, Y: 0, Width: 2, Height: 1})
+
+	profileButtons, _ := walk.NewComposite(dlg)
+	pbLayout := walk.NewHBoxLayout()
+	_ = pbLayout.SetMargins(walk.Margins{})
+	_ = pbLayout.SetSpacing(4)
+	_ = profileButtons.SetLayout(pbLayout)
+	_ = layout.SetRange(profileButtons, walk.Rectangle{X: 3, Y: 0, Width: 1, Height: 1})
+	newProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = newProfileBtn.SetText("New")
+	dupProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = dupProfileBtn.SetText("Duplicate")
+	delProfileBtn, _ := walk.NewPushButton(profileButtons)
+	_ = delProfileBtn.SetText("Delete")
 
 	modeLabel, _ := walk.NewLabel(dlg)
 	_ = modeLabel.SetText("Mode")
@@ -1568,14 +1751,18 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = dsnLabel.SetText("DSN")
 	_ = layout.SetRange(dsnLabel, walk.Rectangle{X: 0, Y: 2, Width: 1, Height: 1})
 
-	dsnEntry, _ := walk.NewLineEdit(dlg)
+	// Editable combo boxes: pick a DSN / driver installed for this exe's
+	// bitness (SQLDataSources / SQLDrivers) or type one.
+	dsnEntry, _ := walk.NewComboBox(dlg)
+	_ = dsnEntry.SetModel(dsnNames())
 	_ = layout.SetRange(dsnEntry, walk.Rectangle{X: 1, Y: 2, Width: 3, Height: 1})
 
 	driverLabel, _ := walk.NewLabel(dlg)
 	_ = driverLabel.SetText("Driver")
 	_ = layout.SetRange(driverLabel, walk.Rectangle{X: 0, Y: 3, Width: 1, Height: 1})
 
-	driverEntry, _ := walk.NewLineEdit(dlg)
+	driverEntry, _ := walk.NewComboBox(dlg)
+	_ = driverEntry.SetModel(driverNames())
 	_ = layout.SetRange(driverEntry, walk.Rectangle{X: 1, Y: 3, Width: 3, Height: 1})
 
 	fileLabel, _ := walk.NewLabel(dlg)
@@ -1583,7 +1770,16 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = layout.SetRange(fileLabel, walk.Rectangle{X: 0, Y: 4, Width: 1, Height: 1})
 
 	fileEntry, _ := walk.NewLineEdit(dlg)
-	_ = layout.SetRange(fileEntry, walk.Rectangle{X: 1, Y: 4, Width: 3, Height: 1})
+	_ = layout.SetRange(fileEntry, walk.Rectangle{X: 1, Y: 4, Width: 2, Height: 1})
+	browseBtn, _ := walk.NewPushButton(dlg)
+	_ = browseBtn.SetText("Browse…")
+	_ = layout.SetRange(browseBtn, walk.Rectangle{X: 3, Y: 4, Width: 1, Height: 1})
+	browseBtn.Clicked().Attach(func() {
+		fd := walk.FileDialog{Title: "File DSN", Filter: "File DSN (*.dsn)|*.dsn|All files (*.*)|*.*", FilePath: fileEntry.Text()}
+		if ok, _ := fd.ShowOpen(dlg); ok {
+			_ = fileEntry.SetText(fd.FilePath)
+		}
+	})
 
 	connLabel, _ := walk.NewLabel(dlg)
 	_ = connLabel.SetText("Connection string")
@@ -1591,6 +1787,22 @@ func (u *applicationUI) showConnectionWindow() {
 
 	connEntry, _ := walk.NewTextEdit(dlg)
 	_ = layout.SetRange(connEntry, walk.Rectangle{X: 1, Y: 5, Width: 3, Height: 2})
+
+	// Templates fill the connection string with <placeholders> to replace.
+	templateNames := app.ConnTemplateNames()
+	templateSelect, _ := walk.NewDropDownBox(dlg)
+	_ = templateSelect.SetModel(templateNames)
+	_ = templateSelect.SetCurrentIndex(0)
+	_ = layout.SetRange(templateSelect, walk.Rectangle{X: 0, Y: 6, Width: 1, Height: 1})
+	templateSelect.CurrentIndexChanged().Attach(func() {
+		i := templateSelect.CurrentIndex()
+		if i <= 0 || i > len(app.ConnTemplates) {
+			return
+		}
+		_ = connEntry.SetText(app.ConnTemplates[i-1].Template)
+		_ = templateSelect.SetCurrentIndex(0)
+		_ = connEntry.SetFocus()
+	})
 
 	nameLabel, _ := walk.NewLabel(dlg)
 	_ = nameLabel.SetText("Name")
@@ -1626,19 +1838,21 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = finalView.SetReadOnly(true)
 	_ = layout.SetRange(finalView, walk.Rectangle{X: 1, Y: 11, Width: 3, Height: 2})
 
-	profileOptions := make([]string, 0, len(u.cfg.Connections))
+	var profileOptions []string
 	profileMap := map[string]config.ConnectionProfile{}
-	for _, p := range u.cfg.Connections {
-		label := p.Name + " [" + p.Type + "]"
-		profileOptions = append(profileOptions, label)
-		profileMap[label] = p
-	}
-	_ = profileSelect.SetModel(profileOptions)
-	if len(profileOptions) > 0 {
-		_ = profileSelect.SetCurrentIndex(0)
-	}
-
 	selectedProfileID := ""
+	// loadProfileList rebuilds the profile picker from the config.
+	loadProfileList := func() {
+		profileOptions = make([]string, 0, len(u.cfg.Connections))
+		profileMap = map[string]config.ConnectionProfile{}
+		for _, p := range u.cfg.Connections {
+			label := app.ProfileLabel(p)
+			profileOptions = append(profileOptions, label)
+			profileMap[label] = p
+		}
+		_ = profileSelect.SetModel(profileOptions)
+	}
+	loadProfileList()
 
 	applyModeVisibility := func() {
 		mode := comboSelected(modeSelect, modeOptions)
@@ -1648,11 +1862,19 @@ func (u *applicationUI) showConnectionWindow() {
 		driverEntry.SetVisible(mode == "Driver")
 		fileLabel.SetVisible(mode == "File DSN")
 		fileEntry.SetVisible(mode == "File DSN")
-		connLabel.SetVisible(mode == "Connection string")
-		connEntry.SetVisible(mode == "Connection string")
+		browseBtn.SetVisible(mode == "File DSN")
+		// Driver mode reuses the text box for extra attributes.
+		connLabel.SetVisible(mode == "Connection string" || mode == "Driver")
+		connEntry.SetVisible(mode == "Connection string" || mode == "Driver")
+		templateSelect.SetVisible(mode == "Connection string")
+		if mode == "Driver" {
+			_ = connLabel.SetText("Attributes (Server=…;Database=…)")
+		} else {
+			_ = connLabel.SetText("Connection string")
+		}
 	}
 
-	profileSelect.CurrentIndexChanged().Attach(func() {
+	fillFromProfile := func() {
 		label := comboSelected(profileSelect, profileOptions)
 		p, ok := profileMap[label]
 		if !ok {
@@ -1679,9 +1901,85 @@ func (u *applicationUI) showConnectionWindow() {
 			_ = modeSelect.SetCurrentIndex(indexOf(modeOptions, "DSN"))
 		}
 		applyModeVisibility()
+	}
+	profileSelect.CurrentIndexChanged().Attach(fillFromProfile)
+
+	// selectProfile reloads the list and selects the profile with id (or
+	// nothing when id is not found).
+	selectProfile := func(id string) {
+		loadProfileList()
+		selectedProfileID = ""
+		for i, label := range profileOptions {
+			if profileMap[label].ID == id {
+				_ = profileSelect.SetCurrentIndex(i)
+				fillFromProfile()
+				return
+			}
+		}
+		_ = profileSelect.SetCurrentIndex(-1)
+	}
+	clearFields := func() {
+		selectedProfileID = ""
+		_ = profileSelect.SetCurrentIndex(-1)
+		for _, le := range []*walk.LineEdit{nameEntry, userEntry, passEntry, fileEntry} {
+			_ = le.SetText("")
+		}
+		_ = dsnEntry.SetText("")
+		_ = driverEntry.SetText("")
+		_ = connEntry.SetText("")
+		_ = finalView.SetText("")
+		savePasswordCheck.SetChecked(false)
+		_ = nameEntry.SetFocus()
+	}
+	newProfileBtn.Clicked().Attach(clearFields)
+	dupProfileBtn.Clicked().Attach(func() {
+		p, ok := u.cfg.ConnectionByID(selectedProfileID)
+		if !ok {
+			showInfoBox(dlg, "Profiles", "Select a saved profile to duplicate.")
+			return
+		}
+		cp := app.DuplicateProfile(p, u.cfg.Connections, time.Now())
+		u.cfg.UpsertConnection(cp)
+		if err := config.SaveConfig(u.cfg, u.configPath); err != nil {
+			showErrorBox(dlg, "Profiles", err)
+		}
+		selectProfile(cp.ID)
+	})
+	delProfileBtn.Clicked().Attach(func() {
+		p, ok := u.cfg.ConnectionByID(selectedProfileID)
+		if !ok {
+			showInfoBox(dlg, "Profiles", "Select a saved profile to delete.")
+			return
+		}
+		if walk.MsgBox(dlg, "Delete profile", "Delete the profile \""+p.Name+"\"?\nIts saved password is removed too.", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+			return
+		}
+		if p.CredentialRef != "" && u.secrets != nil {
+			_ = u.secrets.Delete(p.CredentialRef)
+		}
+		u.cfg.RemoveConnection(p.ID)
+		if err := config.SaveConfig(u.cfg, u.configPath); err != nil {
+			showErrorBox(dlg, "Profiles", err)
+		}
+		loadProfileList()
+		clearFields()
 	})
 
 	modeSelect.CurrentIndexChanged().Attach(applyModeVisibility)
+	// Preselect the first saved profile after the handler is attached so its
+	// fields are actually filled in (previously the dialog opened with the
+	// profile selected but empty fields).
+	if len(profileOptions) > 0 {
+		idx := 0
+		for i, label := range profileOptions {
+			if profileMap[label].ID == u.preselectProfileID {
+				idx = i
+			}
+		}
+		u.preselectProfileID = ""
+		_ = profileSelect.SetCurrentIndex(idx)
+		fillFromProfile()
+	}
 
 	buildProfile := func() (config.ConnectionProfile, string, error) {
 		name := strings.TrimSpace(nameEntry.Text())
@@ -1691,7 +1989,7 @@ func (u *applicationUI) showConnectionWindow() {
 
 		profileID := selectedProfileID
 		if profileID == "" {
-			profileID = generateProfileID(name)
+			profileID = app.NewProfileID(name, time.Now())
 		}
 
 		profile := config.ConnectionProfile{
@@ -1705,7 +2003,7 @@ func (u *applicationUI) showConnectionWindow() {
 			SavePassword: savePasswordCheck.Checked(),
 			Options: config.ConnectionOptions{
 				LoginTimeoutMs: 30000,
-				LimitSyntax:    "TOP",
+				LimitSyntax:    "auto",
 			},
 		}
 		password := passEntry.Text()
@@ -1716,6 +2014,7 @@ func (u *applicationUI) showConnectionWindow() {
 				return profile, password, errors.New("driver is required")
 			}
 			profile.Type = "driver"
+			profile.ConnectionString = strings.TrimSpace(connEntry.Text())
 		case "File DSN":
 			if profile.FilePath == "" {
 				return profile, password, errors.New("file DSN path is required")
@@ -1744,6 +2043,9 @@ func (u *applicationUI) showConnectionWindow() {
 			}
 		}
 
+		if missing := core.UnfilledPlaceholders(profile.ConnectionString); len(missing) > 0 && (profile.Type == "connection_string" || profile.Type == "driver") {
+			return profile, password, errors.New("replace the template placeholders: " + strings.Join(missing, ", "))
+		}
 		finalConn, err := odbc.BuildConnectionString(profile, password)
 		if err != nil {
 			return profile, password, err
@@ -1784,29 +2086,62 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = buttonRow.SetLayout(rowLayout)
 	_ = layout.SetRange(buttonRow, walk.Rectangle{X: 0, Y: 13, Width: 4, Height: 1})
 
+	// Inline result of Test / Save (no message box to dismiss).
+	resultLabel, _ := walk.NewLabel(dlg)
+	_ = layout.SetRange(resultLabel, walk.Rectangle{X: 0, Y: 14, Width: 4, Height: 1})
+	setResult := func(ok bool, text string) {
+		if ok {
+			resultLabel.SetTextColor(walk.RGB(0, 110, 0))
+		} else {
+			resultLabel.SetTextColor(walk.RGB(180, 0, 0))
+		}
+		_ = resultLabel.SetText(text)
+		_ = resultLabel.SetToolTipText(text)
+	}
+
 	testBtn, _ := walk.NewPushButton(buttonRow)
-	_ = testBtn.SetText("Test")
+	_ = testBtn.SetText("&Test")
 	saveBtn, _ := walk.NewPushButton(buttonRow)
 	_ = saveBtn.SetText("Save Profile")
 	connectBtn, _ := walk.NewPushButton(buttonRow)
-	_ = connectBtn.SetText("Connect")
+	_ = connectBtn.SetText("&Connect")
 	cancelBtn, _ := walk.NewPushButton(buttonRow)
 	_ = cancelBtn.SetText("Cancel")
 
+	testing := false
+	closed := false // set when the dialog closes; late callbacks then do nothing
+	connecting := false
 	testBtn.Clicked().Attach(func() {
-		profile, password, buildErr := buildProfile()
-		if buildErr != nil {
-			showErrorBox(dlg, "Connection Test", buildErr)
+		if testing {
 			return
 		}
+		profile, password, buildErr := buildProfile()
+		if buildErr != nil {
+			setResult(false, "Test: "+buildErr.Error())
+			return
+		}
+		testing = true
+		testBtn.SetEnabled(false)
+		setResult(true, "Testing connection…")
 		go func() {
 			elapsed, testErr := u.manager.TestConnection(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
-				if testErr != nil {
-					showErrorBox(dlg, "Connection Test", testErr)
+				if closed {
 					return
 				}
-				showInfoBox(dlg, "Connection Test", "Success in "+elapsed.String())
+				testing = false
+				testBtn.SetEnabled(true)
+				if testErr != nil {
+					full := odbc.MaskSecrets(testErr.Error())
+					msg := "Test failed: " + app.OneLine(full)
+					if h := app.ConnectErrorHint(full, buildinfo.Arch()); h != "" {
+						msg += "  ->  " + h
+					}
+					setResult(false, msg)
+					_ = resultLabel.SetToolTipText(app.WithConnectHint(full, buildinfo.Arch()))
+					return
+				}
+				setResult(true, "Test succeeded in "+elapsed.Round(time.Millisecond).String())
 			})
 		}()
 	})
@@ -1818,23 +2153,40 @@ func (u *applicationUI) showConnectionWindow() {
 			return
 		}
 		if err := saveProfile(profile, password); err != nil {
-			showErrorBox(dlg, "Profiles", err)
+			setResult(false, "Not saved: "+err.Error())
 			return
 		}
-		showInfoBox(dlg, "Profiles", "Profile saved.")
+		// Keep editing the saved profile (a second Save updates it instead
+		// of creating another copy).
+		selectProfile(profile.ID)
+		setResult(true, "Profile \""+profile.Name+"\" saved.")
 	})
 
 	connectBtn.Clicked().Attach(func() {
+		// Connect runs in the background; ignore a second click (or Return)
+		// while it is in flight instead of opening the session twice.
+		if connecting {
+			return
+		}
 		profile, password, buildErr := buildProfile()
 		if buildErr != nil {
 			showErrorBox(dlg, "Connect", buildErr)
 			return
 		}
+		connecting = true
+		connectBtn.SetEnabled(false)
+		_ = connectBtn.SetText("Connecting…")
 		go func() {
 			_, connectErr := u.manager.Connect(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
+				if closed {
+					return
+				}
+				connecting = false
+				connectBtn.SetEnabled(true)
+				_ = connectBtn.SetText("&Connect")
 				if connectErr != nil {
-					showErrorBox(dlg, "Connect", connectErr)
+					showConnectError(dlg, "Connect", connectErr)
 					return
 				}
 				if saveErr := saveProfile(profile, password); saveErr != nil {
@@ -1851,20 +2203,42 @@ func (u *applicationUI) showConnectionWindow() {
 	cancelBtn.Clicked().Attach(func() {
 		dlg.Cancel()
 	})
+	// While Connect runs the dialog stays open (its result decides whether
+	// the profile is saved); closing during Test is fine.
+	dlg.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if connecting {
+			*canceled = true
+			return
+		}
+		closed = true
+	})
 
 	_ = dlg.SetDefaultButton(connectBtn)
 	_ = dlg.SetCancelButton(cancelBtn)
 
 	applyModeVisibility()
-	dlg.Run()
+	connected := dlg.Run() == walk.DlgCmdOK
+	u.refreshConnectToMenu() // profiles may have been added, renamed or deleted
+	if connected {
+		// Fill the schema browser right away (cached per session; F8 refreshes).
+		u.loadSchema(false)
+	}
+	// Back in the main window: put the caret in the editor so the user can type SQL right away.
+	if tab := u.currentEditorTab(); tab != nil {
+		_ = tab.Editor.SetFocus()
+	}
+	u.refreshState()
 }
 func (u *applicationUI) showAbout() {
 	var report strings.Builder
-	report.WriteString("GoQueryOne\n")
-	report.WriteString("Architecture: " + runtime.GOARCH + "\n")
+	report.WriteString("GoQueryOne " + buildinfo.Version + "\n")
+	report.WriteString("Commit: " + buildinfo.Commit + "\n")
+	report.WriteString("Build date: " + buildinfo.Date + "\n")
+	report.WriteString("Architecture: " + buildinfo.Arch() + " (" + runtime.GOARCH + ")\n")
+	report.WriteString("License: MIT\n")
 	report.WriteString("Config path: " + u.configPath + "\n")
 	report.WriteString("Portable mode: " + strconv.FormatBool(strings.Contains(strings.ToLower(u.configPath), strings.ToLower(filepath.Dir(executablePath())))) + "\n")
-	if session, err := u.manager.ActiveSession(); err == nil {
+	if session, ok := u.manager.ActiveView(); ok {
 		report.WriteString("Active connection: " + session.Name + "\n")
 		report.WriteString("State: " + string(session.State) + "\n")
 		if len(session.ConnectedInfo) > 0 {
@@ -1910,21 +2284,19 @@ func (u *applicationUI) refreshSessionSelect() {
 	}
 }
 
+// updateStatus ends any transient activity/execution and re-renders the
+// presenter state (status bar sections, enablement, title).
 func (u *applicationUI) updateStatus() {
-	session, err := u.manager.ActiveSession()
-	if err != nil {
-		_ = u.statusLabel.SetText("Disconnected")
-		return
-	}
+	u.executing = false
+	u.activityText = ""
+	u.refreshState()
+}
 
-	msg := fmt.Sprintf("Active: %s | State: %s", session.Name, session.State)
-	if session.Tx != nil {
-		msg += " | Transaction: ON"
-	}
-	if !session.LastQueryAt.IsZero() {
-		msg += " | Last Query: " + session.LastQueryAt.Format(time.RFC3339)
-	}
-	_ = u.statusLabel.SetText(msg)
+func (u *applicationUI) beginExecuting(activity string) {
+	u.executing = true
+	u.executingSince = time.Now()
+	u.activityText = activity
+	u.refreshState()
 }
 
 func (u *applicationUI) restoreProfiles() {
@@ -1942,7 +2314,7 @@ func (u *applicationUI) promptParameters(count int, callback func([]any)) {
 	_ = dlg.SetBounds(walk.Rectangle{Width: 560, Height: 430})
 
 	layout := walk.NewVBoxLayout()
-	_ = layout.SetMargins(walk.Margins{8, 8, 8, 8})
+	_ = layout.SetMargins(walk.Margins{HNear: 8, VNear: 8, HFar: 8, VFar: 8})
 	_ = layout.SetSpacing(8)
 	if err := dlg.SetLayout(layout); err != nil {
 		showErrorBox(u.mainWindow, "Parameters", err)
@@ -2059,6 +2431,11 @@ func (u *applicationUI) promptParameters(count int, callback func([]any)) {
 }
 
 func (u *applicationUI) promptLine(title, label, initial string) (string, bool) {
+	return u.promptLineOK(title, label, initial, "Save")
+}
+
+// promptLineOK asks for one line of text; okText labels the OK button.
+func (u *applicationUI) promptLineOK(title, label, initial, okText string) (string, bool) {
 	dlg, err := walk.NewDialog(u.mainWindow)
 	if err != nil {
 		showErrorBox(u.mainWindow, title, err)
@@ -2068,7 +2445,7 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 	_ = dlg.SetBounds(walk.Rectangle{Width: 420, Height: 160})
 
 	layout := walk.NewVBoxLayout()
-	_ = layout.SetMargins(walk.Margins{8, 8, 8, 8})
+	_ = layout.SetMargins(walk.Margins{HNear: 8, VNear: 8, HFar: 8, VFar: 8})
 	_ = layout.SetSpacing(8)
 	_ = dlg.SetLayout(layout)
 
@@ -2085,12 +2462,16 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 	_ = buttons.SetLayout(rowLayout)
 
 	okBtn, _ := walk.NewPushButton(buttons)
-	_ = okBtn.SetText("Save")
+	_ = okBtn.SetText(okText)
 
 	cancelBtn, _ := walk.NewPushButton(buttons)
 	_ = cancelBtn.SetText("Cancel")
 
+	// Read the text before the dialog closes: afterwards the edit control is
+	// destroyed and Text() returns "" (this made Rename tab a no-op).
+	var value string
 	okBtn.Clicked().Attach(func() {
+		value = entry.Text()
 		dlg.Accept()
 	})
 	cancelBtn.Clicked().Attach(func() {
@@ -2099,9 +2480,14 @@ func (u *applicationUI) promptLine(title, label, initial string) (string, bool) 
 
 	_ = dlg.SetDefaultButton(okBtn)
 	_ = dlg.SetCancelButton(cancelBtn)
+	// Type right away: focus the text box with its content selected.
+	dlg.Starting().Attach(func() {
+		_ = entry.SetFocus()
+		entry.SetTextSelection(0, -1)
+	})
 
 	if dlg.Run() == walk.DlgCmdOK {
-		return entry.Text(), true
+		return value, true
 	}
 	return "", false
 }
@@ -2125,11 +2511,12 @@ func selectedText(editor *walk.TextEdit) string {
 	if end <= start {
 		return ""
 	}
-	runes := []rune(editor.Text())
-	if start < 0 || start >= len(runes) || end > len(runes) {
+	text := editor.Text()
+	bs, be := core.UTF16OffsetToByteOffset(text, start), core.UTF16OffsetToByteOffset(text, end)
+	if bs < 0 || be > len(text) || bs >= be {
 		return ""
 	}
-	return string(runes[start:end])
+	return text[bs:be]
 }
 
 func comboSelected(combo *walk.ComboBox, options []string) string {
@@ -2160,23 +2547,27 @@ func showErrorBox(owner walk.Form, title string, err error) {
 	if err == nil {
 		return
 	}
-	walk.MsgBox(owner, title, err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+	// Driver errors can echo connection-string attributes: always mask.
+	walk.MsgBox(owner, title, odbc.MaskSecrets(err.Error()), walk.MsgBoxOK|walk.MsgBoxIconError)
 }
 
-func generateProfileID(name string) string {
-	clean := strings.ToLower(strings.TrimSpace(name))
-	clean = strings.ReplaceAll(clean, " ", "-")
-	if clean == "" {
-		clean = "connection"
+// identQuote is the active connection's identifier quote character
+// (SQLGetInfo), or "" when unknown.
+func (u *applicationUI) identQuote() string {
+	session, err := u.manager.ActiveSession()
+	if err != nil {
+		return ""
 	}
-	return fmt.Sprintf("%s-%d", clean, time.Now().UnixNano())
+	info, err := u.manager.DBInfo(session.ID)
+	if err != nil {
+		return ""
+	}
+	return info.IdentifierQuote
 }
 
-func qualifiedName(t odbc.SchemaTable) string {
-	if strings.TrimSpace(t.Schema) == "" {
-		return t.Name
-	}
-	return t.Schema + "." + t.Name
+// sqlName is a table name ready for generated SQL (quoted when needed).
+func (u *applicationUI) sqlName(t odbc.SchemaTable) string {
+	return core.QualifiedName(t.Schema, t.Name, u.identQuote())
 }
 
 func executablePath() string {
@@ -2185,4 +2576,21 @@ func executablePath() string {
 		return ""
 	}
 	return exe
+}
+
+// showConnectError shows a connect failure with an actionable hint for
+// common SQLSTATEs (IM014 bitness mismatch, IM002 unknown DSN, login...).
+func showConnectError(owner walk.Form, title string, err error) {
+	if err == nil {
+		return
+	}
+	walk.MsgBox(owner, title, app.WithConnectHint(odbc.MaskSecrets(err.Error()), buildinfo.Arch()), walk.MsgBoxOK|walk.MsgBoxIconError)
+}
+
+// bitnessWord is "64-bit" or "32-bit" for the running exe.
+func bitnessWord() string {
+	if strconv.IntSize == 32 {
+		return "32-bit"
+	}
+	return "64-bit"
 }

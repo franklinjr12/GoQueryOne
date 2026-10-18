@@ -19,27 +19,55 @@ const (
 )
 
 type Session struct {
-	ID            string
-	Name          string
-	Profile       config.ConnectionProfile
-	DB            *sql.DB
-	Tx            *sql.Tx
-	State         SessionState
-	CreatedAt     time.Time
-	ConnectedAt   time.Time
-	LastQueryAt   time.Time
-	LastResult    *StatementResult
-	LastDiag      Diagnostic
+	ID          string
+	Name        string
+	Profile     config.ConnectionProfile
+	DB          *sql.DB
+	Tx          *sql.Tx
+	State       SessionState
+	CreatedAt   time.Time
+	ConnectedAt time.Time
+	LastQueryAt time.Time
+	LastResult  *StatementResult
+	LastDiag    Diagnostic
+	// LastOutcome is the outcome of the last statement ("ok", "error",
+	// "canceled", "timeout"); State only reflects connectivity.
+	LastOutcome   string
+	LastError     string
 	History       []HistoryEntry
 	SchemaCache   *SchemaCache
 	ExecCancel    func()
 	ConnectedInfo map[string]string
+
+	// connStr is the full connection string (incl. password), kept in
+	// memory only so the ODBC catalog connection can be opened lazily.
+	connStr    string
+	catalogMu  sync.Mutex
+	catalog    Catalog
+	catalogErr error
+	// scriptCanceled is set by CancelExecution (under Manager.mu) so a
+	// running script stops instead of continuing with the next statement.
+	scriptCanceled bool
+	dbInfo         *DBInfo
 }
+
+// Opener opens a database handle for a fully-built ODBC connection string.
+// Production code wires it to sql.Open("odbc", ...); tests inject an Opener
+// backed by a pure-Go driver (e.g. modernc.org/sqlite) so the engine can be
+// exercised without CGO or a system ODBC driver manager.
+type Opener func(connStr string) (*sql.DB, error)
 
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	activeID string
+	opener   Opener
+	// catalogOpener opens a native ODBC catalog connection (SQLTables,
+	// SQLColumns, SQLGetInfo, …). nil means INFORMATION_SCHEMA/PRAGMA only.
+	catalogOpener CatalogOpener
+	// history hooks (persisted history, opt-in); see SetHistoryHooks.
+	historySave func(profileID string, e HistoryEntry)
+	historyLoad func(profileID string) []HistoryEntry
 }
 
 type QueryOptions struct {
@@ -57,15 +85,30 @@ type ScriptOptions struct {
 }
 
 type ResultSet struct {
-	Columns     []Column
-	Rows        [][]string
+	Columns []Column
+	// Rows holds cell text; SQL NULL cells hold "" and are flagged in Nulls.
+	Rows [][]string
+	// Nulls has the same shape as Rows; true marks a SQL NULL.
+	Nulls       [][]bool
 	RowCount    int
 	Truncated   bool
 	TruncatedAt int
 }
 
+// IsNull reports whether the cell at (row, col) is SQL NULL.
+func (r ResultSet) IsNull(row, col int) bool {
+	if row < 0 || row >= len(r.Nulls) || col < 0 || col >= len(r.Nulls[row]) {
+		return false
+	}
+	return r.Nulls[row][col]
+}
+
 type StatementResult struct {
-	Statement      string
+	Statement string
+	// Kind is "query" or "exec" (from core.ClassifyStatement).
+	Kind string
+	// Message is a short outcome text for non-row results ("Command executed").
+	Message        string
 	ResultSet      ResultSet
 	HasRows        bool
 	RowsAffected   int64
@@ -83,6 +126,7 @@ type ScriptResult struct {
 	Results       []StatementResult
 	ExecutionTime time.Duration
 	StoppedOnErr  bool
+	Canceled      bool // Cancel was pressed: the remaining statements were skipped
 }
 
 type Column struct {

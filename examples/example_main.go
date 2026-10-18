@@ -1,3 +1,7 @@
+//go:build ignore
+
+// Example usage of the config and odbc packages (not part of the build).
+
 package main
 
 import (
