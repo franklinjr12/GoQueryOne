@@ -119,6 +119,9 @@ func filterSnapshot(snapshot SchemaSnapshot, search string) SchemaSnapshot {
 	return snapshot
 }
 
+// errNoPrimaryKey marks an empty SQLPrimaryKeys answer (try the fallback).
+var errNoPrimaryKey = errors.New("no primary key reported")
+
 func (m *Manager) TableDetails(sessionID, catalog, schema, table string) (TableDetails, error) {
 	session, err := m.GetSession(sessionID)
 	if err != nil {
@@ -160,10 +163,19 @@ func (m *Manager) TableDetails(sessionID, catalog, schema, table string) (TableD
 	pkErr := m.withCatalog(session, func(c Catalog) error {
 		var e error
 		pks, e = c.PrimaryKeys(ref)
+		if e == nil && len(pks) == 0 {
+			// Some drivers (e.g. sqlite3odbc for a rowid alias) report no key
+			// where the SQL fallback finds one; an empty answer is not final.
+			e = errNoPrimaryKey
+		}
 		return e
 	})
 	if pkErr != nil {
-		pks, pkErr = loadPrimaryKeys(session, catalog, schema, table)
+		if fallback, fbErr := loadPrimaryKeys(session, catalog, schema, table); fbErr == nil {
+			pks, pkErr = fallback, nil
+		} else if errors.Is(pkErr, errNoPrimaryKey) {
+			pkErr = nil // the catalog answered "no key"; the fallback is just unsupported
+		}
 	}
 	if pkErr != nil {
 		details.Unsupported = append(details.Unsupported, "this driver does not support SQLPrimaryKeys-compatible metadata")

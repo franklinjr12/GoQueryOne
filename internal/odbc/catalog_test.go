@@ -195,3 +195,28 @@ func TestDBInfoWithoutCatalog(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestTableDetailsEmptyCatalogPKUsesFallback(t *testing.T) {
+	fc := sampleCatalog()
+	fc.pks = nil
+	m, s := catalogManager(t, fc, nil)
+	mustExec(t, m, s.ID, "CREATE TABLE orders (id INTEGER PRIMARY KEY, total REAL)")
+	d, err := m.TableDetails(s.ID, "", "", "orders")
+	if err != nil || len(d.PrimaryKeys) != 1 || d.PrimaryKeys[0] != "id" {
+		t.Fatalf("PKs = %v err %v unsupported %v", d.PrimaryKeys, err, d.Unsupported)
+	}
+	// No key anywhere: reported as none, not as unsupported.
+	fc2 := sampleCatalog()
+	fc2.pks = nil
+	m2, s2 := catalogManager(t, fc2, nil)
+	mustExec(t, m2, s2.ID, "CREATE TABLE nokey (a INTEGER)")
+	d2, err := m2.TableDetails(s2.ID, "", "", "nokey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range d2.Unsupported {
+		if strings.Contains(u, "SQLPrimaryKeys") {
+			t.Fatalf("unexpected unsupported note: %v", d2.Unsupported)
+		}
+	}
+}
