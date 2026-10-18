@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/franklinjr12/GoQueryOne/internal/core"
 )
 
 type queryExecutor interface {
@@ -50,7 +52,7 @@ func (m *Manager) ExecuteStatement(sessionID, sqlText string, params []any, opts
 	defer func() {
 		m.mu.Lock()
 		session.ExecCancel = nil
-		if session.State != SessionError {
+		if session.State == SessionExecuting {
 			session.State = SessionConnected
 		}
 		m.mu.Unlock()
@@ -67,45 +69,73 @@ func (m *Manager) ExecuteStatement(sessionID, sqlText string, params []any, opts
 		Statement:      statement,
 		StartedAt:      start,
 		ParameterCount: CountPositionalParams(statement),
+		Kind:           kindName(core.ClassifyStatement(statement)),
 	}
 
-	rows, qErr := q.QueryContext(ctx, statement, params...)
-	if qErr == nil {
-		defer rows.Close()
-		result.HasRows = true
-		result.ResultSet, err = readResultSet(rows, maxRows)
-		if err != nil {
-			qErr = err
+	// Classify once and execute exactly once. Historically a failing query
+	// was retried through ExecContext, which executed DML twice on some
+	// drivers and re-ran every failing statement. Never retry on the other path.
+	var execErr error
+	if core.ClassifyStatement(statement) == core.KindQuery {
+		rows, qErr := q.QueryContext(ctx, statement, params...)
+		if qErr != nil {
+			execErr = qErr
+		} else {
+			rs, readErr := readResultSet(rows, maxRows)
+			_ = rows.Close()
+			if readErr != nil {
+				execErr = readErr
+			} else if len(rs.Columns) == 0 {
+				result.HasRows = false
+				result.Message = "Command executed"
+			} else {
+				result.HasRows = true
+				result.ResultSet = rs
+			}
 		}
-	}
-
-	if qErr != nil {
+	} else {
 		execResult, exErr := ex.ExecContext(ctx, statement, params...)
 		if exErr != nil {
-			end := time.Now()
-			result.ExecutionTime = end.Sub(start)
-			result.CompletedAt = end
-			result.ErrorMessage = exErr.Error()
-			result.Diagnostics = BuildDiagnostic("execute", statement, exErr).Records
-			if errors.Is(ctx.Err(), context.Canceled) {
-				result.Canceled = true
+			execErr = exErr
+		} else {
+			affected, raErr := execResult.RowsAffected()
+			if raErr != nil {
+				affected = -1
 			}
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				result.TimedOut = true
-			}
-			m.mu.Lock()
-			session.LastDiag = BuildDiagnostic("execute", statement, exErr)
-			session.LastResult = &result
-			session.LastQueryAt = time.Now()
-			session.State = SessionError
-			m.addHistory(session, statement, "error", result.ExecutionTime)
-			m.mu.Unlock()
-			cancel()
-			return result, exErr
+			result.RowsAffected = affected
+			result.Message = "Command executed"
 		}
-		affected, _ := execResult.RowsAffected()
-		result.HasRows = false
-		result.RowsAffected = affected
+	}
+
+	if execErr != nil {
+		end := time.Now()
+		result.ExecutionTime = end.Sub(start)
+		result.CompletedAt = end
+		result.ErrorMessage = execErr.Error()
+		diag := BuildDiagnostic("execute", statement, execErr)
+		result.Diagnostics = diag.Records
+		if errors.Is(ctx.Err(), context.Canceled) {
+			result.Canceled = true
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			result.TimedOut = true
+		}
+		status := "error"
+		if result.Canceled {
+			status = "canceled"
+		} else if result.TimedOut {
+			status = "timeout"
+		}
+		m.mu.Lock()
+		session.LastDiag = diag
+		session.LastResult = &result
+		session.LastQueryAt = time.Now()
+		session.LastOutcome = status
+		session.LastError = execErr.Error()
+		m.addHistory(session, statement, status, result.ExecutionTime)
+		m.mu.Unlock()
+		cancel()
+		return result, execErr
 	}
 
 	end := time.Now()
@@ -132,6 +162,8 @@ func (m *Manager) ExecuteStatement(sessionID, sqlText string, params []any, opts
 	m.mu.Lock()
 	session.LastResult = &result
 	session.LastQueryAt = time.Now()
+	session.LastOutcome = status
+	session.LastError = result.ErrorMessage
 	m.addHistory(session, statement, status, result.ExecutionTime)
 	m.mu.Unlock()
 
@@ -173,6 +205,19 @@ func (m *Manager) ExecuteScript(sessionID, script string, opts ScriptOptions) (S
 	return result, nil
 }
 
+func kindName(k core.StatementKind) string {
+	if k == core.KindQuery {
+		return "query"
+	}
+	return "exec"
+}
+
+// IsQueryStatement reports whether sqlText is executed through the query
+// path (returns rows). Load More only re-executes such statements.
+func IsQueryStatement(sqlText string) bool {
+	return core.ClassifyStatement(sqlText) == core.KindQuery
+}
+
 func readResultSet(rows *sql.Rows, maxRows int) (ResultSet, error) {
 	columns, err := rows.Columns()
 	if err != nil {
@@ -181,7 +226,8 @@ func readResultSet(rows *sql.Rows, maxRows int) (ResultSet, error) {
 	colTypes, _ := rows.ColumnTypes()
 	result := ResultSet{
 		Columns: make([]Column, 0, len(columns)),
-		Rows:    make([][]string, 0, maxRows),
+		Rows:    make([][]string, 0, min(maxRows, 1024)),
+		Nulls:   make([][]bool, 0, min(maxRows, 1024)),
 	}
 	for i, name := range columns {
 		col := Column{Name: name, Type: "unknown", Nullable: true}
@@ -213,10 +259,12 @@ func readResultSet(rows *sql.Rows, maxRows int) (ResultSet, error) {
 			return ResultSet{}, err
 		}
 		row := make([]string, len(columns))
+		nulls := make([]bool, len(columns))
 		for i, raw := range scanValues {
 			switch v := raw.(type) {
 			case nil:
-				row[i] = "NULL"
+				row[i] = ""
+				nulls[i] = true
 			case []byte:
 				row[i] = string(v)
 			default:
@@ -224,6 +272,7 @@ func readResultSet(rows *sql.Rows, maxRows int) (ResultSet, error) {
 			}
 		}
 		result.Rows = append(result.Rows, row)
+		result.Nulls = append(result.Nulls, nulls)
 	}
 	if err := rows.Err(); err != nil {
 		return ResultSet{}, err

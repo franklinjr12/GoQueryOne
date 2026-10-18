@@ -19,17 +19,21 @@ const (
 )
 
 type Session struct {
-	ID            string
-	Name          string
-	Profile       config.ConnectionProfile
-	DB            *sql.DB
-	Tx            *sql.Tx
-	State         SessionState
-	CreatedAt     time.Time
-	ConnectedAt   time.Time
-	LastQueryAt   time.Time
-	LastResult    *StatementResult
-	LastDiag      Diagnostic
+	ID          string
+	Name        string
+	Profile     config.ConnectionProfile
+	DB          *sql.DB
+	Tx          *sql.Tx
+	State       SessionState
+	CreatedAt   time.Time
+	ConnectedAt time.Time
+	LastQueryAt time.Time
+	LastResult  *StatementResult
+	LastDiag    Diagnostic
+	// LastOutcome is the outcome of the last statement ("ok", "error",
+	// "canceled", "timeout"); State only reflects connectivity.
+	LastOutcome   string
+	LastError     string
 	History       []HistoryEntry
 	SchemaCache   *SchemaCache
 	ExecCancel    func()
@@ -64,15 +68,30 @@ type ScriptOptions struct {
 }
 
 type ResultSet struct {
-	Columns     []Column
-	Rows        [][]string
+	Columns []Column
+	// Rows holds cell text; SQL NULL cells hold "" and are flagged in Nulls.
+	Rows [][]string
+	// Nulls has the same shape as Rows; true marks a SQL NULL.
+	Nulls       [][]bool
 	RowCount    int
 	Truncated   bool
 	TruncatedAt int
 }
 
+// IsNull reports whether the cell at (row, col) is SQL NULL.
+func (r ResultSet) IsNull(row, col int) bool {
+	if row < 0 || row >= len(r.Nulls) || col < 0 || col >= len(r.Nulls[row]) {
+		return false
+	}
+	return r.Nulls[row][col]
+}
+
 type StatementResult struct {
-	Statement      string
+	Statement string
+	// Kind is "query" or "exec" (from core.ClassifyStatement).
+	Kind string
+	// Message is a short outcome text for non-row results ("Command executed").
+	Message        string
 	ResultSet      ResultSet
 	HasRows        bool
 	RowsAffected   int64

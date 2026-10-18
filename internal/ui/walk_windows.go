@@ -17,6 +17,7 @@ import (
 
 	"github.com/franklinjr12/GoQueryOne/internal/buildinfo"
 	"github.com/franklinjr12/GoQueryOne/internal/config"
+	"github.com/franklinjr12/GoQueryOne/internal/core"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/securestore"
 	"github.com/lxn/walk"
@@ -38,7 +39,11 @@ type resultsTableModel struct {
 	walk.TableModelBase
 	columns []string
 	rows    [][]string
+	nulls   [][]bool
 }
+
+// nullDisplayText is how SQL NULL is rendered in the grid (distinct from the string "NULL").
+const nullDisplayText = "(null)"
 
 func (m *resultsTableModel) RowCount() int {
 	return len(m.rows)
@@ -54,15 +59,16 @@ func (m *resultsTableModel) Value(row, col int) interface{} {
 	if col >= len(m.rows[row]) {
 		return ""
 	}
+	if row < len(m.nulls) && col < len(m.nulls[row]) && m.nulls[row][col] {
+		return nullDisplayText
+	}
 	return m.rows[row][col]
 }
 
-func (m *resultsTableModel) SetData(columns []string, rows [][]string) {
+func (m *resultsTableModel) SetData(columns []string, rows [][]string, nulls [][]bool) {
 	m.columns = append([]string(nil), columns...)
-	m.rows = make([][]string, len(rows))
-	for i := range rows {
-		m.rows[i] = append([]string(nil), rows[i]...)
-	}
+	m.rows = rows
+	m.nulls = nulls
 	m.PublishRowsReset()
 }
 
@@ -87,6 +93,7 @@ type applicationUI struct {
 	resultsModel   *resultsTableModel
 	resultsColumns []string
 	resultsRows    [][]string
+	resultsNulls   [][]bool
 	selectedRow    int
 	selectedCol    int
 	loadMoreButton *walk.PushButton
@@ -1038,7 +1045,15 @@ func (u *applicationUI) runStatement() {
 
 	sqlText := strings.TrimSpace(selectedText(tab.Editor))
 	if sqlText == "" {
-		sqlText = strings.TrimSpace(tab.Editor.Text())
+		// No selection: run the statement under the caret (like ODBC Query Tool)
+		// and select it so the user sees exactly what was executed.
+		text := tab.Editor.Text()
+		caret, _ := tab.Editor.TextSelection()
+		stmt, start, end, ok := core.StatementAt(text, core.UTF16OffsetToByteOffset(text, caret))
+		if ok {
+			sqlText = strings.TrimSpace(stmt)
+			tab.Editor.SetTextSelection(core.ByteOffsetToUTF16Offset(text, start), core.ByteOffsetToUTF16Offset(text, end))
+		}
 	}
 	if sqlText == "" {
 		showInfoBox(u.mainWindow, "Run", "No SQL to execute.")
@@ -1060,6 +1075,13 @@ func (u *applicationUI) runStatement() {
 			u.runOnMain(func() {
 				if runErr != nil {
 					u.showDiagnostic(runErr, res)
+				} else if u.outputTabs != nil {
+					// Auto-switch: rows -> Results, commands -> Messages.
+					if res.HasRows {
+						_ = u.outputTabs.SetCurrentIndex(0)
+					} else {
+						_ = u.outputTabs.SetCurrentIndex(1)
+					}
 				}
 				u.applyStatementResult(res)
 				u.updateHistory()
@@ -1113,10 +1135,13 @@ func (u *applicationUI) runScript() {
 				} else if item.TimedOut {
 					status = "timeout"
 				}
-				b.WriteString(fmt.Sprintf("%d. %s (%v)\n", i+1, status, item.ExecutionTime))
-				if item.HasRows {
+				b.WriteString(fmt.Sprintf("%d. %s (%s)\n", i+1, status, core.FormatDuration(item.ExecutionTime)))
+				switch {
+				case item.ErrorMessage != "":
+					b.WriteString("   " + odbc.MaskSecrets(item.ErrorMessage) + "\n")
+				case item.HasRows:
 					b.WriteString(fmt.Sprintf("   rows: %d\n", item.ResultSet.RowCount))
-				} else {
+				case item.RowsAffected >= 0:
 					b.WriteString(fmt.Sprintf("   rows affected: %d\n", item.RowsAffected))
 				}
 			}
@@ -1149,21 +1174,27 @@ func (u *applicationUI) cancelExecution() {
 }
 
 func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
+	if res.ErrorMessage != "" {
+		// Failures are reported in the Errors tab; never print a fake "completed" line.
+		u.appendMessage(fmt.Sprintf("%s  Error after %s: %s", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime), odbc.MaskSecrets(res.ErrorMessage)))
+		return
+	}
 	if res.HasRows {
 		u.resultsColumns = make([]string, len(res.ResultSet.Columns))
 		for i, c := range res.ResultSet.Columns {
 			u.resultsColumns[i] = c.Name
 		}
 		u.resultsRows = res.ResultSet.Rows
+		u.resultsNulls = res.ResultSet.Nulls
 		u.rebuildResultsColumns()
-		u.resultsModel.SetData(u.resultsColumns, u.resultsRows)
+		u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
 		if res.ResultSet.Truncated {
 			u.loadMoreButton.SetVisible(true)
 			u.appendMessage(fmt.Sprintf("Result truncated at %d rows.", res.ResultSet.TruncatedAt))
 		} else {
 			u.loadMoreButton.SetVisible(false)
 		}
-		u.appendMessage(fmt.Sprintf("Query completed in %v. Rows: %d, Cols: %d", res.ExecutionTime, res.ResultSet.RowCount, len(res.ResultSet.Columns)))
+		u.appendMessage(fmt.Sprintf("%s  %d rows, %d columns retrieved in %s", time.Now().Format("15:04:05"), res.ResultSet.RowCount, len(res.ResultSet.Columns), core.FormatDuration(res.ExecutionTime)))
 		if u.outputEnabled {
 			u.appendMessage(FormatResultAsCSVLike(&res))
 		}
@@ -1172,10 +1203,15 @@ func (u *applicationUI) applyStatementResult(res odbc.StatementResult) {
 
 	u.resultsColumns = []string{}
 	u.resultsRows = [][]string{}
+	u.resultsNulls = nil
 	u.rebuildResultsColumns()
-	u.resultsModel.SetData(u.resultsColumns, u.resultsRows)
+	u.resultsModel.SetData(u.resultsColumns, u.resultsRows, u.resultsNulls)
 	u.loadMoreButton.SetVisible(false)
-	u.appendMessage(fmt.Sprintf("Command completed in %v. Rows affected: %d", res.ExecutionTime, res.RowsAffected))
+	if res.RowsAffected >= 0 {
+		u.appendMessage(fmt.Sprintf("%s  Command executed in %s. Rows affected: %d", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime), res.RowsAffected))
+	} else {
+		u.appendMessage(fmt.Sprintf("%s  Command executed in %s.", time.Now().Format("15:04:05"), core.FormatDuration(res.ExecutionTime)))
+	}
 }
 
 func (u *applicationUI) showDiagnostic(err error, res odbc.StatementResult) {
@@ -1212,7 +1248,7 @@ func (u *applicationUI) updateHistory() {
 	}
 	var b strings.Builder
 	for _, item := range session.History {
-		b.WriteString(fmt.Sprintf("%s [%s] %v\r\n%s\r\n", item.When.Format(time.RFC3339), item.Status, item.Duration, item.SQL))
+		b.WriteString(fmt.Sprintf("%s [%s] %s\r\n%s\r\n", item.When.Format("2006-01-02 15:04:05"), item.Status, core.FormatDuration(item.Duration), item.SQL))
 	}
 	_ = u.historyEntry.SetText(strings.TrimSpace(b.String()))
 }
@@ -1395,8 +1431,14 @@ func (u *applicationUI) loadMoreRows() {
 	if strings.TrimSpace(u.lastQuerySQL) == "" {
 		return
 	}
+	if !odbc.IsQueryStatement(u.lastQuerySQL) {
+		// Never re-run DML/DDL just to page results.
+		showInfoBox(u.mainWindow, "Load More", "Load More is only available for queries that return rows.")
+		return
+	}
 
 	u.lastMaxRows += u.cfg.Query.FetchPageSize
+	u.appendMessage("Query re-executed to load more rows (max " + strconv.Itoa(u.lastMaxRows) + ").")
 	_ = u.statusLabel.SetText("Loading more...")
 
 	go func() {
@@ -1925,8 +1967,21 @@ func (u *applicationUI) updateStatus() {
 	if session.Tx != nil {
 		msg += " | Transaction: ON"
 	}
-	if !session.LastQueryAt.IsZero() {
-		msg += " | Last Query: " + session.LastQueryAt.Format(time.RFC3339)
+	if session.LastResult != nil {
+		r := session.LastResult
+		switch {
+		case session.LastOutcome != "" && session.LastOutcome != "ok":
+			msg += " | Last statement: " + session.LastOutcome + " after " + core.FormatDuration(r.ExecutionTime)
+		case r.HasRows:
+			msg += fmt.Sprintf(" | %d rows in %s", r.ResultSet.RowCount, core.FormatDuration(r.ExecutionTime))
+			if r.ResultSet.Truncated {
+				msg += fmt.Sprintf(" (truncated at %d)", r.ResultSet.TruncatedAt)
+			}
+		case r.RowsAffected >= 0:
+			msg += fmt.Sprintf(" | %d rows affected in %s", r.RowsAffected, core.FormatDuration(r.ExecutionTime))
+		default:
+			msg += " | Command executed in " + core.FormatDuration(r.ExecutionTime)
+		}
 	}
 	_ = u.statusLabel.SetText(msg)
 }
@@ -2129,11 +2184,12 @@ func selectedText(editor *walk.TextEdit) string {
 	if end <= start {
 		return ""
 	}
-	runes := []rune(editor.Text())
-	if start < 0 || start >= len(runes) || end > len(runes) {
+	text := editor.Text()
+	bs, be := core.UTF16OffsetToByteOffset(text, start), core.UTF16OffsetToByteOffset(text, end)
+	if bs < 0 || be > len(text) || bs >= be {
 		return ""
 	}
-	return string(runes[start:end])
+	return text[bs:be]
 }
 
 func comboSelected(combo *walk.ComboBox, options []string) string {

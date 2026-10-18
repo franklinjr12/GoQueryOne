@@ -29,7 +29,8 @@ func (m *Manager) LoadSchema(sessionID, search string) (SchemaSnapshot, error) {
 		diag := BuildDiagnostic("schema.load", "", err)
 		m.mu.Lock()
 		session.LastDiag = diag
-		session.State = SessionError
+		session.LastOutcome = "error"
+		session.LastError = err.Error()
 		m.mu.Unlock()
 		return SchemaSnapshot{}, err
 	}

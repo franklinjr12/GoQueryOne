@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/franklinjr12/GoQueryOne/internal/config"
+	"github.com/franklinjr12/GoQueryOne/internal/core"
 )
 
 const maxHistoryEntries = 50
@@ -203,44 +204,10 @@ func (m *Manager) DisconnectAll() {
 	}
 }
 
+// BuildConnectionString builds an ODBC connection string with brace
+// escaping (see core.BuildConnectionString).
 func BuildConnectionString(profile config.ConnectionProfile, password string) (string, error) {
-	base := strings.TrimSpace(profile.ConnectionString)
-	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
-	case "dsn":
-		if strings.TrimSpace(profile.DSN) == "" {
-			return "", errors.New("dsn is required")
-		}
-		base = "DSN=" + profile.DSN + ";"
-	case "connection_string":
-		if base == "" {
-			return "", errors.New("connection string is required")
-		}
-	case "file_dsn":
-		if strings.TrimSpace(profile.FilePath) == "" {
-			return "", errors.New("file dsn path is required")
-		}
-		base = "FILEDSN=" + profile.FilePath + ";"
-	case "driver":
-		if strings.TrimSpace(profile.Driver) == "" {
-			return "", errors.New("driver is required")
-		}
-		base = "Driver={" + profile.Driver + "};"
-	default:
-		return "", fmt.Errorf("unsupported connection profile type %q", profile.Type)
-	}
-	if profile.Username != "" && !containsConnKey(base, "uid") && !containsConnKey(base, "user id") {
-		base += "UID=" + profile.Username + ";"
-	}
-	if password != "" && !containsConnKey(base, "pwd") && !containsConnKey(base, "password") {
-		base += "PWD=" + password + ";"
-	}
-	return base, nil
-}
-
-func containsConnKey(connStr, key string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(connStr, " ", ""))
-	key = strings.ToLower(strings.ReplaceAll(key, " ", ""))
-	return strings.Contains(normalized, key+"=")
+	return core.BuildConnectionString(profile, password)
 }
 
 func (m *Manager) setSessionError(sessionID, op, sqlText string, err error) {
