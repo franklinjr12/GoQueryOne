@@ -90,6 +90,18 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		timeout = 30 * time.Second
 	}
 
+	// Saved history is read (disk I/O) before taking the Manager lock.
+	m.mu.RLock()
+	load := m.historyLoad
+	m.mu.RUnlock()
+	var preloaded []HistoryEntry
+	if load != nil {
+		preloaded = load(profile.ID)
+		if len(preloaded) > maxHistoryEntries {
+			preloaded = preloaded[len(preloaded)-maxHistoryEntries:]
+		}
+	}
+
 	m.mu.Lock()
 	if _, exists := m.sessions[profile.ID]; exists {
 		m.mu.Unlock()
@@ -103,12 +115,7 @@ func (m *Manager) Connect(profile config.ConnectionProfile, password string, tim
 		CreatedAt:   time.Now(),
 		SchemaCache: NewSchemaCache(),
 	}
-	if m.historyLoad != nil {
-		session.History = m.historyLoad(profile.ID)
-		if len(session.History) > maxHistoryEntries {
-			session.History = session.History[len(session.History)-maxHistoryEntries:]
-		}
-	}
+	session.History = preloaded
 	m.sessions[session.ID] = session
 	if m.activeID == "" {
 		m.activeID = session.ID
@@ -183,6 +190,15 @@ func (m *Manager) Disconnect(sessionID string) error {
 		return errors.New("session not found")
 	}
 	delete(m.sessions, sessionID)
+	tx := session.Tx
+	cancel := session.ExecCancel
+	m.mu.Unlock()
+	// No new native catalog connection may be opened for a closed session
+	// (an in-flight schema load could otherwise reopen and leak one).
+	session.catalogMu.Lock()
+	session.connStr = ""
+	session.catalogMu.Unlock()
+	m.mu.Lock()
 	if m.activeID == sessionID {
 		m.activeID = ""
 		for id := range m.sessions {
@@ -192,11 +208,11 @@ func (m *Manager) Disconnect(sessionID string) error {
 	}
 	m.mu.Unlock()
 
-	if session.ExecCancel != nil {
-		session.ExecCancel()
+	if cancel != nil {
+		cancel()
 	}
-	if session.Tx != nil {
-		_ = session.Tx.Rollback()
+	if tx != nil {
+		_ = tx.Rollback()
 	}
 	session.closeCatalog()
 	if session.DB != nil {
@@ -298,8 +314,9 @@ func (m *Manager) addHistory(session *Session, sqlText, status string, duration 
 }
 
 // SetHistoryHooks enables persisted history: save is called (with the
-// Manager lock held: it must not call back into the Manager) for every
-// executed statement, already masked; load pre-fills a new session's
+// Manager lock held: it must not block or call back into the Manager, so
+// hand the entry to a writer goroutine) for every executed statement,
+// already masked; load pre-fills a new session's
 // history for its profile. nil hooks disable persistence.
 func (m *Manager) SetHistoryHooks(save func(profileID string, e HistoryEntry), load func(profileID string) []HistoryEntry) {
 	m.mu.Lock()
@@ -315,6 +332,7 @@ func (m *Manager) CancelExecution(sessionID string) error {
 	if !ok {
 		return errors.New("session not found")
 	}
+	session.scriptCanceled = true
 	if session.ExecCancel == nil {
 		return errors.New("no running execution")
 	}

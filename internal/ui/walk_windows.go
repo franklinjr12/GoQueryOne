@@ -19,6 +19,7 @@ import (
 	"github.com/franklinjr12/GoQueryOne/internal/config"
 	"github.com/franklinjr12/GoQueryOne/internal/core"
 	"github.com/franklinjr12/GoQueryOne/internal/export"
+	"github.com/franklinjr12/GoQueryOne/internal/history"
 	"github.com/franklinjr12/GoQueryOne/internal/odbc"
 	"github.com/franklinjr12/GoQueryOne/internal/securestore"
 	"github.com/lxn/walk"
@@ -130,6 +131,9 @@ type applicationUI struct {
 	editorTabs     *walk.TabWidget
 	editorTabIndex map[*walk.TabPage]*sqlEditorTab
 	splitters      []*walk.Splitter
+	historyStore   *history.Store
+	historyWriter  *history.Writer
+	detailsGen     int // latest table-details request (stale results are dropped)
 	// preselectProfileID makes the next connection dialog open on this profile.
 	preselectProfileID string
 
@@ -321,6 +325,10 @@ func (u *applicationUI) build() error {
 		}
 		_ = config.SaveConfig(u.cfg, u.configPath)
 		u.manager.DisconnectAll()
+		u.manager.SetHistoryHooks(nil, nil)
+		if u.historyWriter != nil {
+			u.historyWriter.Close() // flush queued history entries
+		}
 	})
 
 	return nil
@@ -1336,8 +1344,8 @@ func (u *applicationUI) showErrorsTab() {
 }
 
 func (u *applicationUI) updateHistory() {
-	session, err := u.manager.ActiveSession()
-	if err != nil {
+	session, ok := u.manager.ActiveView()
+	if !ok {
 		_ = u.historyEntry.SetText("")
 		return
 	}
@@ -1407,9 +1415,14 @@ func (u *applicationUI) showTableDetails(table odbc.SchemaTable) {
 	if err != nil {
 		return
 	}
+	u.detailsGen++
+	gen := u.detailsGen
 	go func() {
 		details, detailsErr := u.manager.TableDetails(session.ID, table.Catalog, table.Schema, table.Name)
 		u.runOnMain(func() {
+			if gen != u.detailsGen {
+				return // the user selected another table meanwhile
+			}
 			if detailsErr != nil {
 				_ = u.schemaDetails.SetText(detailsErr.Error())
 				return
@@ -2051,6 +2064,8 @@ func (u *applicationUI) showConnectionWindow() {
 	_ = cancelBtn.SetText("Cancel")
 
 	testing := false
+	closed := false // set when the dialog closes; late callbacks then do nothing
+	connecting := false
 	testBtn.Clicked().Attach(func() {
 		if testing {
 			return
@@ -2066,6 +2081,9 @@ func (u *applicationUI) showConnectionWindow() {
 		go func() {
 			elapsed, testErr := u.manager.TestConnection(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
+				if closed {
+					return
+				}
 				testing = false
 				testBtn.SetEnabled(true)
 				if testErr != nil {
@@ -2093,7 +2111,6 @@ func (u *applicationUI) showConnectionWindow() {
 		setResult(true, "Profile \""+profile.Name+"\" saved.")
 	})
 
-	connecting := false
 	connectBtn.Clicked().Attach(func() {
 		// Connect runs in the background; ignore a second click (or Return)
 		// while it is in flight instead of opening the session twice.
@@ -2111,6 +2128,9 @@ func (u *applicationUI) showConnectionWindow() {
 		go func() {
 			_, connectErr := u.manager.Connect(profile, password, time.Duration(profile.Options.LoginTimeoutMs)*time.Millisecond)
 			dlg.Synchronize(func() {
+				if closed {
+					return
+				}
 				connecting = false
 				connectBtn.SetEnabled(true)
 				_ = connectBtn.SetText("&Connect")
@@ -2131,6 +2151,15 @@ func (u *applicationUI) showConnectionWindow() {
 
 	cancelBtn.Clicked().Attach(func() {
 		dlg.Cancel()
+	})
+	// While Connect runs the dialog stays open (its result decides whether
+	// the profile is saved); closing during Test is fine.
+	dlg.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if connecting {
+			*canceled = true
+			return
+		}
+		closed = true
 	})
 
 	_ = dlg.SetDefaultButton(connectBtn)
@@ -2158,7 +2187,7 @@ func (u *applicationUI) showAbout() {
 	report.WriteString("License: MIT\n")
 	report.WriteString("Config path: " + u.configPath + "\n")
 	report.WriteString("Portable mode: " + strconv.FormatBool(strings.Contains(strings.ToLower(u.configPath), strings.ToLower(filepath.Dir(executablePath())))) + "\n")
-	if session, err := u.manager.ActiveSession(); err == nil {
+	if session, ok := u.manager.ActiveView(); ok {
 		report.WriteString("Active connection: " + session.Name + "\n")
 		report.WriteString("State: " + string(session.State) + "\n")
 		if len(session.ConnectedInfo) > 0 {
@@ -2453,7 +2482,8 @@ func showErrorBox(owner walk.Form, title string, err error) {
 	if err == nil {
 		return
 	}
-	walk.MsgBox(owner, title, err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+	// Driver errors can echo connection-string attributes: always mask.
+	walk.MsgBox(owner, title, odbc.MaskSecrets(err.Error()), walk.MsgBoxOK|walk.MsgBoxIconError)
 }
 
 // identQuote is the active connection's identifier quote character

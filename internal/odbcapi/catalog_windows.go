@@ -106,7 +106,7 @@ func (c *Catalog) Columns(t odbc.SchemaTable) ([]odbc.SchemaColumn, error) {
 	sch, schLen := wstr(t.Schema)
 	tbl, tblLen := wstr(t.Name)
 	return withStmt(c.dbc, "SQLColumns", func(st handle) uintptr {
-		ret, _, _ := procColumnsW.Call(st, cat, catLen, sch, schLen, tbl, tblLen, 0, 0)
+		ret, _, _ := procColumnsW.Call(st, uintptr(unsafe.Pointer(cat)), catLen, uintptr(unsafe.Pointer(sch)), schLen, uintptr(unsafe.Pointer(tbl)), tblLen, 0, 0)
 		return ret
 	}, readColumns)
 }
@@ -117,7 +117,7 @@ func (c *Catalog) PrimaryKeys(t odbc.SchemaTable) ([]string, error) {
 	sch, schLen := wstr(t.Schema)
 	tbl, tblLen := wstr(t.Name)
 	return withStmt(c.dbc, "SQLPrimaryKeys", func(st handle) uintptr {
-		ret, _, _ := procPrimaryKeysW.Call(st, cat, catLen, sch, schLen, tbl, tblLen)
+		ret, _, _ := procPrimaryKeysW.Call(st, uintptr(unsafe.Pointer(cat)), catLen, uintptr(unsafe.Pointer(sch)), schLen, uintptr(unsafe.Pointer(tbl)), tblLen)
 		return ret
 	}, readPrimaryKeys)
 }
@@ -128,7 +128,7 @@ func (c *Catalog) ForeignKeys(t odbc.SchemaTable) ([]odbc.ForeignKey, error) {
 	sch, schLen := wstr(t.Schema)
 	tbl, tblLen := wstr(t.Name)
 	return withStmt(c.dbc, "SQLForeignKeys", func(st handle) uintptr {
-		ret, _, _ := procForeignKeysW.Call(st, 0, 0, 0, 0, 0, 0, cat, catLen, sch, schLen, tbl, tblLen)
+		ret, _, _ := procForeignKeysW.Call(st, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(cat)), catLen, uintptr(unsafe.Pointer(sch)), schLen, uintptr(unsafe.Pointer(tbl)), tblLen)
 		return ret
 	}, readForeignKeys)
 }
@@ -139,7 +139,7 @@ func (c *Catalog) Indexes(t odbc.SchemaTable) ([]odbc.IndexInfo, error) {
 	sch, schLen := wstr(t.Schema)
 	tbl, tblLen := wstr(t.Name)
 	return withStmt(c.dbc, "SQLStatistics", func(st handle) uintptr {
-		ret, _, _ := procStatisticsW.Call(st, cat, catLen, sch, schLen, tbl, tblLen, sqlIndexAll, sqlQuickStatistics)
+		ret, _, _ := procStatisticsW.Call(st, uintptr(unsafe.Pointer(cat)), catLen, uintptr(unsafe.Pointer(sch)), schLen, uintptr(unsafe.Pointer(tbl)), tblLen, sqlIndexAll, sqlQuickStatistics)
 		return ret
 	}, readIndexes)
 }

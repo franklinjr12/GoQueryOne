@@ -320,10 +320,10 @@ func (u *applicationUI) refreshState() {
 		return
 	}
 	s := app.State{SessionCount: len(u.manager.SessionList()), Executing: u.executing, ExecutingSince: u.executingSince}
-	if session, err := u.manager.ActiveSession(); err == nil {
-		s.Connected = session.DB != nil && session.State != odbc.SessionDisconnected
+	if session, ok := u.manager.ActiveView(); ok {
+		s.Connected = session.HasDB && session.State != odbc.SessionDisconnected
 		s.ConnectionName = session.Name
-		s.TxOpen = session.Tx != nil
+		s.TxOpen = session.TxOpen
 		if r := session.LastResult; r != nil {
 			s.Last = outcomeOf(*r)
 		}

@@ -42,3 +42,26 @@ func TestHistoryHooks(t *testing.T) {
 		t.Fatalf("preloaded %d entries", len(s2.History))
 	}
 }
+
+func TestScriptStopsAfterCancel(t *testing.T) {
+	m, s := newSQLiteManager(t)
+	calls := 0
+	// The save hook runs under the Manager lock after each statement:
+	// simulate Cancel pressed while the first statement ran.
+	m.SetHistoryHooks(func(string, HistoryEntry) {
+		calls++
+		s.scriptCanceled = true
+	}, nil)
+	res, err := m.ExecuteScript(s.ID, "CREATE TABLE a (x INTEGER); CREATE TABLE b (x INTEGER); CREATE TABLE c (x INTEGER);", ScriptOptions{})
+	if err == nil || !res.Canceled {
+		t.Fatalf("err=%v canceled=%v", err, res.Canceled)
+	}
+	if calls != 1 || len(res.Results) != 1 {
+		t.Fatalf("ran %d statements (%d results), want 1", calls, len(res.Results))
+	}
+	// The next script starts fresh.
+	m.SetHistoryHooks(nil, nil)
+	if _, err := m.ExecuteScript(s.ID, "CREATE TABLE d (x INTEGER);", ScriptOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}

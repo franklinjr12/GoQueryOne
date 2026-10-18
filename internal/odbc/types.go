@@ -45,7 +45,10 @@ type Session struct {
 	catalogMu  sync.Mutex
 	catalog    Catalog
 	catalogErr error
-	dbInfo     *DBInfo
+	// scriptCanceled is set by CancelExecution (under Manager.mu) so a
+	// running script stops instead of continuing with the next statement.
+	scriptCanceled bool
+	dbInfo         *DBInfo
 }
 
 // Opener opens a database handle for a fully-built ODBC connection string.
@@ -123,6 +126,7 @@ type ScriptResult struct {
 	Results       []StatementResult
 	ExecutionTime time.Duration
 	StoppedOnErr  bool
+	Canceled      bool // Cancel was pressed: the remaining statements were skipped
 }
 
 type Column struct {

@@ -147,17 +147,19 @@ func newEnv() (handle, error) {
 	return env, nil
 }
 
-// wstr returns a pointer/length pair for an optional search argument; an
-// empty string becomes NULL (= "all").
-func wstr(v string) (uintptr, uintptr) {
+// wstr returns a UTF-16 pointer/length pair for an optional search
+// argument; an empty string becomes NULL (= "all"). The pointer stays typed
+// so the buffer is kept alive until the caller converts it to uintptr
+// inside the syscall's argument list (the only GC-safe place to do so).
+func wstr(v string) (*uint16, uintptr) {
 	if v == "" {
-		return 0, 0
+		return nil, 0
 	}
 	p, err := syscall.UTF16PtrFromString(v)
 	if err != nil {
-		return 0, 0
+		return nil, 0
 	}
-	return uintptr(unsafe.Pointer(p)), ntsSmall
+	return p, ntsSmall
 }
 
 // stmtRS reads a statement's result set as strings through SQLGetData.

@@ -60,9 +60,12 @@ func (m *Manager) ExecuteStatement(sessionID, sqlText string, params []any, opts
 
 	var q queryExecutor = session.DB
 	var ex execExecutor = session.DB
-	if session.Tx != nil {
-		q = session.Tx
-		ex = session.Tx
+	m.mu.RLock()
+	tx := session.Tx
+	m.mu.RUnlock()
+	if tx != nil {
+		q = tx
+		ex = tx
 	}
 
 	result := StatementResult{
@@ -186,13 +189,34 @@ func (m *Manager) ExecuteScript(sessionID, script string, opts ScriptOptions) (S
 	result := ScriptResult{
 		Results: make([]StatementResult, 0, len(statements)),
 	}
+	canceled := func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		s, ok := m.sessions[sessionID]
+		return ok && s.scriptCanceled
+	}
+	m.mu.Lock()
+	if s, ok := m.sessions[sessionID]; ok {
+		s.scriptCanceled = false
+	}
+	m.mu.Unlock()
 	for _, stmt := range statements {
+		if canceled() {
+			result.Canceled = true
+			result.ExecutionTime = time.Since(start)
+			return result, errors.New("script canceled by user")
+		}
 		stmtResult, err := m.ExecuteStatement(sessionID, stmt, nil, QueryOptions{
 			Timeout:  opts.Timeout,
 			MaxRows:  opts.MaxRows,
 			PageSize: opts.PageSize,
 		})
 		result.Results = append(result.Results, stmtResult)
+		if stmtResult.Canceled || canceled() {
+			result.Canceled = true
+			result.ExecutionTime = time.Since(start)
+			return result, errors.New("script canceled by user")
+		}
 		if err != nil {
 			if opts.StopOnErr {
 				result.StoppedOnErr = true

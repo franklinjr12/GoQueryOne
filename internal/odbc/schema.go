@@ -93,6 +93,10 @@ func (m *Manager) RefreshSchema(sessionID, search string) (SchemaSnapshot, error
 		return SchemaSnapshot{}, err
 	}
 	session.SchemaCache.Invalidate()
+	// A manual refresh retries a native catalog connection that failed before.
+	session.catalogMu.Lock()
+	session.catalogErr = nil
+	session.catalogMu.Unlock()
 	return m.LoadSchema(sessionID, search)
 }
 

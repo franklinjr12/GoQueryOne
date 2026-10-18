@@ -118,9 +118,15 @@ func (u *applicationUI) applyHistorySetting() {
 		u.manager.SetHistoryHooks(nil, nil)
 		return
 	}
-	store := history.New(filepath.Join(filepath.Dir(u.configPath), "history.jsonl"), 1000)
+	// One store and one writer goroutine for the app's lifetime (closed in
+	// the main window's Closing handler), however often Settings is applied.
+	if u.historyStore == nil {
+		u.historyStore = history.New(filepath.Join(filepath.Dir(u.configPath), "history.jsonl"), 1000)
+		u.historyWriter = history.NewWriter(u.historyStore, 256)
+	}
+	store, writer := u.historyStore, u.historyWriter
 	u.manager.SetHistoryHooks(func(profileID string, e odbc.HistoryEntry) {
-		_ = store.Append(history.Record{ProfileID: profileID, When: e.When, SQL: e.SQL, Status: e.Status, DurationMs: e.Duration.Milliseconds()})
+		writer.Enqueue(history.Record{ProfileID: profileID, When: e.When, SQL: e.SQL, Status: e.Status, DurationMs: e.Duration.Milliseconds()})
 	}, func(profileID string) []odbc.HistoryEntry {
 		recs, err := store.Recent(profileID, 50)
 		if err != nil {
