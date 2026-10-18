@@ -405,7 +405,7 @@ func (u *applicationUI) addEditorTab(baseTitle, content string) {
 	}
 	_ = editor.SetText(content)
 	_ = layout.SetStretchFactor(editor, 1)
-	if font := monoFont(10); font != nil {
+	if font := monoFont(app.EditorFontSize(*u.cfg)); font != nil {
 		editor.SetFont(font)
 	}
 	editor.KeyUp().Attach(func(walk.Key) { u.refreshState() })
@@ -1979,7 +1979,7 @@ func (u *applicationUI) showConnectionWindow() {
 	saveBtn, _ := walk.NewPushButton(buttonRow)
 	_ = saveBtn.SetText("Save Profile")
 	connectBtn, _ := walk.NewPushButton(buttonRow)
-	_ = connectBtn.SetText("Connect")
+	_ = connectBtn.SetText("&Connect")
 	cancelBtn, _ := walk.NewPushButton(buttonRow)
 	_ = cancelBtn.SetText("Cancel")
 
@@ -2046,7 +2046,7 @@ func (u *applicationUI) showConnectionWindow() {
 			dlg.Synchronize(func() {
 				connecting = false
 				connectBtn.SetEnabled(true)
-				_ = connectBtn.SetText("Connect")
+				_ = connectBtn.SetText("&Connect")
 				if connectErr != nil {
 					showErrorBox(dlg, "Connect", connectErr)
 					return

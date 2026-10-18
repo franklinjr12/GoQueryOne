@@ -79,10 +79,14 @@ func sizedType(t string) bool {
 // BuildSchemaTree groups the snapshot's tables by type (Tables, Views,
 // Synonyms, System tables, Other) with their columns as children. Empty
 // groups are left out; tables are sorted case-insensitively.
-func BuildSchemaTree(snap odbc.SchemaSnapshot) []*SchemaNode {
+// With hideSystem the "System tables" group is left out.
+func BuildSchemaTree(snap odbc.SchemaSnapshot, hideSystem bool) []*SchemaNode {
 	byGroup := map[string][]int{}
 	for i, t := range snap.Tables {
 		g := groupFor(t.Type)
+		if hideSystem && g == "System tables" {
+			continue
+		}
 		byGroup[g] = append(byGroup[g], i)
 	}
 	var roots []*SchemaNode

@@ -141,7 +141,7 @@ func (u *applicationUI) setSchemaSnapshot(snapshot odbc.SchemaSnapshot) {
 	if u.schemaTree == nil {
 		return
 	}
-	model := &schemaTreeModel{roots: wrapSchemaNodes(app.BuildSchemaTree(snapshot), nil)}
+	model := &schemaTreeModel{roots: wrapSchemaNodes(app.BuildSchemaTree(snapshot, u.cfg.App.HideSystemTables), nil)}
 	_ = u.schemaTree.SetModel(model)
 	filtering := strings.TrimSpace(u.schemaSearchEntry.Text()) != ""
 	for _, g := range model.roots {

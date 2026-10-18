@@ -27,6 +27,10 @@ type AppConfig struct {
 	// SaveHistory persists executed statements (passwords masked) to
 	// history.jsonl next to config.json. Off by default.
 	SaveHistory bool `json:"saveHistory,omitempty"`
+	// EditorFontSize is the SQL editor font size in points (0 = default 10).
+	EditorFontSize int `json:"editorFontSize,omitempty"`
+	// HideSystemTables leaves the "System tables" group out of the schema tree.
+	HideSystemTables bool `json:"hideSystemTables,omitempty"`
 }
 
 type WindowConfig struct {

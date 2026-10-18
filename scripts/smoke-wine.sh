@@ -93,7 +93,7 @@ if [ "${SKIP_FLOWS:-0}" != "1" ]; then
   shot 02-connect-dialog 2
   if [ -n "$DLG" ]; then xdotool windowfocus "$DLG"; sleep 0.3; xdotool key alt+t; sleep 0.3; xdotool key alt+t; fi   # Test (inline result; first key can be lost)
   shot 02b-connect-test 3
-  if [ -n "$DLG" ]; then xdotool windowfocus "$DLG"; sleep 0.3; xdotool key Return; fi   # Connect (default button)
+  if [ -n "$DLG" ]; then xdotool windowfocus "$DLG"; sleep 0.3; xdotool key alt+c; sleep 0.3; xdotool key alt+c; fi   # Connect (Alt+C; Return would hit a focused Test button)
   shot 03-connected 5
   # warm-up: after the modal dialog closes the first keystrokes can be lost
   focus_editor; sleep 1

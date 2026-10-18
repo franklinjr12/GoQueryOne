@@ -23,8 +23,8 @@ func (u *applicationUI) showSettings() {
 		return
 	}
 	_ = dlg.SetTitle("Settings")
-	_ = dlg.SetMinMaxSize(walk.Size{Width: 440, Height: 250}, walk.Size{})
-	_ = dlg.SetSize(walk.Size{Width: 440, Height: 250})
+	_ = dlg.SetMinMaxSize(walk.Size{Width: 440, Height: 310}, walk.Size{})
+	_ = dlg.SetSize(walk.Size{Width: 440, Height: 310})
 	layout := walk.NewGridLayout()
 	_ = layout.SetMargins(walk.Margins{HNear: 10, VNear: 10, HFar: 10, VFar: 10})
 	_ = layout.SetSpacing(8)
@@ -51,6 +51,13 @@ func (u *applicationUI) showSettings() {
 	timeout := number("Statement timeout", cur.TimeoutSeconds, app.MaxTimeoutSeconds, "s")
 	maxRows := number("Maximum rows fetched", cur.MaxRows, app.MaxRowsLimit, "")
 	pageSize := number("Rows added by Load more", cur.PageSize, app.MaxRowsLimit, "")
+	fontSize := number("Editor font size", cur.EditorFontSize, app.MaxFontSize, "pt")
+	_ = fontSize.SetRange(app.MinFontSize, app.MaxFontSize)
+	showSys, _ := walk.NewCheckBox(dlg)
+	_ = showSys.SetText("Show system tables in the schema tree")
+	showSys.SetChecked(cur.ShowSystemTabs)
+	_ = layout.SetRange(showSys, walk.Rectangle{X: 0, Y: row, Width: 2, Height: 1})
+	row++
 	stop, _ := walk.NewCheckBox(dlg)
 	_ = stop.SetText("Stop a script at the first error")
 	stop.SetChecked(cur.StopOnError)
@@ -81,6 +88,8 @@ func (u *applicationUI) showSettings() {
 			PageSize:       int(pageSize.Value()),
 			StopOnError:    stop.Checked(),
 			SaveHistory:    saveHist.Checked(),
+			EditorFontSize: int(fontSize.Value()),
+			ShowSystemTabs: showSys.Checked(),
 		}
 		if err := s.Apply(u.cfg); err != nil {
 			showErrorBox(dlg, "Settings", err)
@@ -88,6 +97,8 @@ func (u *applicationUI) showSettings() {
 		}
 		u.lastMaxRows = u.cfg.Query.DefaultMaxRows
 		u.applyHistorySetting()
+		u.applyEditorFont()
+		u.setSchemaSnapshot(u.schemaSnapshot) // re-apply the system-tables filter
 		if err := config.SaveConfig(u.cfg, u.configPath); err != nil {
 			showErrorBox(dlg, "Settings", err)
 			return
@@ -121,4 +132,15 @@ func (u *applicationUI) applyHistorySetting() {
 		}
 		return out
 	})
+}
+
+// applyEditorFont sets the configured font size on every open editor tab.
+func (u *applicationUI) applyEditorFont() {
+	font := monoFont(app.EditorFontSize(*u.cfg))
+	if font == nil {
+		return
+	}
+	for _, tab := range u.editorTabIndex {
+		tab.Editor.SetFont(font)
+	}
 }

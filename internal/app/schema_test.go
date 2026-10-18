@@ -23,7 +23,7 @@ func TestBuildSchemaTree(t *testing.T) {
 		{Name: "note", Type: "VARCHAR", Size: 40, Nullable: true},
 	})
 
-	roots := BuildSchemaTree(snap)
+	roots := BuildSchemaTree(snap, false)
 	var labels []string
 	for _, r := range roots {
 		labels = append(labels, r.Label)
@@ -52,7 +52,7 @@ func TestBuildSchemaTree(t *testing.T) {
 	if c := orders.Children[1]; c.Label != "note  VARCHAR(40)" {
 		t.Fatalf("column label = %q", c.Label)
 	}
-	if len(BuildSchemaTree(odbc.SchemaSnapshot{})) != 0 {
+	if len(BuildSchemaTree(odbc.SchemaSnapshot{}, true)) != 0 {
 		t.Fatal("empty snapshot should give no groups")
 	}
 }

@@ -13,6 +13,25 @@ type Settings struct {
 	PageSize       int  // rows added by "Load more"
 	StopOnError    bool // stop a script at the first failing statement
 	SaveHistory    bool // persist executed statements (masked) to history.jsonl
+	EditorFontSize int  // SQL editor font size in points
+	ShowSystemTabs bool // show the "System tables" group in the schema tree
+}
+
+// Editor font size limits and default (points).
+const (
+	MinFontSize     = 6
+	MaxFontSize     = 36
+	DefaultFontSize = 10
+)
+
+// EditorFontSize returns the configured editor font size, or the default
+// when unset or out of range.
+func EditorFontSize(cfg config.Config) int {
+	n := cfg.App.EditorFontSize
+	if n < MinFontSize || n > MaxFontSize {
+		return DefaultFontSize
+	}
+	return n
 }
 
 // Limits for the settings dialog.
@@ -27,6 +46,8 @@ func SettingsFromConfig(cfg config.Config) Settings {
 	q := cfg.Query
 	return Settings{
 		SaveHistory:    cfg.App.SaveHistory,
+		EditorFontSize: EditorFontSize(cfg),
+		ShowSystemTabs: !cfg.App.HideSystemTables,
 		TimeoutSeconds: q.DefaultTimeoutMs / 1000,
 		MaxRows:        q.DefaultMaxRows,
 		PageSize:       q.FetchPageSize,
@@ -44,6 +65,8 @@ func (s Settings) Validate() error {
 		return fmt.Errorf("maximum rows must be between %d and %d", MinRows, MaxRowsLimit)
 	case s.PageSize < MinRows || s.PageSize > MaxRowsLimit:
 		return fmt.Errorf("load-more page size must be between %d and %d", MinRows, MaxRowsLimit)
+	case s.EditorFontSize < MinFontSize || s.EditorFontSize > MaxFontSize:
+		return fmt.Errorf("editor font size must be between %d and %d", MinFontSize, MaxFontSize)
 	}
 	return nil
 }
@@ -54,6 +77,8 @@ func (s Settings) Apply(cfg *config.Config) error {
 		return err
 	}
 	cfg.App.SaveHistory = s.SaveHistory
+	cfg.App.EditorFontSize = s.EditorFontSize
+	cfg.App.HideSystemTables = !s.ShowSystemTabs
 	q := &cfg.Query
 	q.DefaultTimeoutMs = s.TimeoutSeconds * 1000
 	q.DefaultMaxRows = s.MaxRows
