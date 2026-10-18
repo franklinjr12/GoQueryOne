@@ -1,0 +1,5 @@
+id  amount  label
+--  ------  -----
+ 1    10.5  abc  
+ 2      -3  de   
+ 3       7  f    
